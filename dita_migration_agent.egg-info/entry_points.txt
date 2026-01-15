@@ -1,0 +1,2 @@
+[console_scripts]
+dita-agent = dita_agent.cli:main

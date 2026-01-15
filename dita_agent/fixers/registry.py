@@ -1,0 +1,799 @@
+"""
+Fixer Registry - Manages all fixers organized by tier.
+
+Tiers:
+1. PATTERN: No LLM needed - regex/template based (~60% of issues)
+2. TEMPLATE: LLM once per rule, then propagate pattern (~30% of issues)
+3. LLM: LLM for each instance (~10% of issues)
+
+The registry routes issues to the appropriate fixer based on rule type.
+"""
+
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Protocol
+
+from dita_agent.core.memory import SessionMemoryV2, LearnedFix, FixStatus
+from dita_agent.llm.client import LLMClient
+from dita_agent.knowledge import get_rule, get_prompt_context
+from dita_agent.fixers.table_fixer import TableLineBreakFixer
+
+
+class FixerTier(Enum):
+    """Fixer tiers by LLM usage."""
+    PATTERN = 1      # No LLM - deterministic
+    TEMPLATE = 2     # LLM once, then propagate
+    LLM = 3          # LLM each time
+
+
+@dataclass
+class FixResult:
+    """Result of a fix attempt."""
+    success: bool
+    old_string: Optional[str] = None
+    new_string: Optional[str] = None
+    error: Optional[str] = None
+    method: str = "unknown"  # "pattern", "template", "llm", "template_propagation"
+    tokens_used: int = 0
+
+
+class BaseFixer(Protocol):
+    """Protocol for all fixers."""
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        """Fix a single issue."""
+        ...
+
+
+# =============================================================================
+# TIER 1: Pattern Fixers (No LLM)
+# =============================================================================
+
+class PatternFixer:
+    """
+    Base class for pattern-based fixers.
+    
+    These fixers use regex patterns to find and fix issues.
+    No LLM needed - 100% deterministic.
+    """
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        """Override in subclass."""
+        raise NotImplementedError
+
+
+class LineBreakFixer(PatternFixer):
+    """Fix hard line breaks (` +` at end of lines).
+    
+    For simple cases (outside tables), uses pattern replacement.
+    For table contexts, returns needs_llm=True to escalate to LLM.
+    """
+    
+    def _is_inside_table(self, lines: list, line_num: int) -> bool:
+        """Check if a line is inside a table block (between |=== markers)."""
+        in_table = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('|==='):
+                in_table = not in_table
+            if i == line_num - 1:
+                return in_table
+        return False
+    
+    def _is_table_cell_line(self, line: str) -> bool:
+        """Check if line appears to be part of a table cell."""
+        return line.strip().startswith('|')
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        lines = content.split('\n')
+        if line < 1 or line > len(lines):
+            return FixResult(success=False, error="Invalid line number", method="pattern")
+        
+        target_line = lines[line - 1]
+        
+        # For table contexts, signal that LLM should handle this
+        # (Pattern fixer can't properly restructure table cells)
+        if self._is_inside_table(lines, line) or self._is_table_cell_line(target_line):
+            return FixResult(
+                success=False,
+                error="TABLE_CONTEXT_NEEDS_LLM",  # Special marker for escalation
+                method="pattern"
+            )
+        
+        # Pattern 1: ` +` at end of line (outside tables) - simple removal
+        if target_line.rstrip().endswith(' +'):
+            old_string = target_line
+            new_string = target_line.rstrip()[:-2]
+            return FixResult(
+                success=True,
+                old_string=old_string,
+                new_string=new_string,
+                method="pattern",
+            )
+        
+        # Pattern 2: :hardbreaks-option: attribute
+        if ':hardbreaks-option:' in target_line:
+            old_string = target_line + '\n'
+            new_string = ''
+            return FixResult(
+                success=True,
+                old_string=old_string,
+                new_string=new_string,
+                method="pattern",
+            )
+        
+        # Pattern 3: [%hardbreaks] block option
+        if '[%hardbreaks]' in target_line:
+            old_string = target_line + '\n'
+            new_string = ''
+            return FixResult(
+                success=True,
+                old_string=old_string,
+                new_string=new_string,
+                method="pattern",
+            )
+        
+        return FixResult(success=False, error="Pattern not found", method="pattern")
+
+
+class PageBreakFixer(PatternFixer):
+    """Fix page breaks (<<<)."""
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        lines = content.split('\n')
+        if line < 1 or line > len(lines):
+            return FixResult(success=False, error="Invalid line number", method="pattern")
+        
+        target_line = lines[line - 1]
+        
+        if target_line.strip() == '<<<':
+            old_string = target_line + '\n'
+            new_string = ''  # Remove page break
+            return FixResult(
+                success=True,
+                old_string=old_string,
+                new_string=new_string,
+                method="pattern",
+            )
+        
+        return FixResult(success=False, error="Page break not found", method="pattern")
+
+
+class ThematicBreakFixer(PatternFixer):
+    """Fix thematic breaks (''' or ---)."""
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        lines = content.split('\n')
+        if line < 1 or line > len(lines):
+            return FixResult(success=False, error="Invalid line number", method="pattern")
+        
+        target_line = lines[line - 1].strip()
+        
+        # Thematic break patterns
+        if target_line in ("'''", "---", "- - -", "* * *", "___"):
+            old_string = lines[line - 1] + '\n'
+            new_string = ''  # Remove thematic break
+            return FixResult(
+                success=True,
+                old_string=old_string,
+                new_string=new_string,
+                method="pattern",
+            )
+        
+        return FixResult(success=False, error="Thematic break not found", method="pattern")
+
+
+class AuthorLineFixer(PatternFixer):
+    """Fix author lines (:author: attribute)."""
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        lines = content.split('\n')
+        if line < 1 or line > len(lines):
+            return FixResult(success=False, error="Invalid line number", method="pattern")
+        
+        target_line = lines[line - 1]
+        
+        if target_line.strip().startswith(':author:'):
+            old_string = target_line + '\n'
+            new_string = ''  # Remove author line
+            return FixResult(
+                success=True,
+                old_string=old_string,
+                new_string=new_string,
+                method="pattern",
+            )
+        
+        return FixResult(success=False, error="Author line not found", method="pattern")
+
+
+class EntityReferenceFixer(PatternFixer):
+    """Fix entity references (&nbsp;, &amp;, etc.)."""
+    
+    ENTITY_MAP = {
+        '&nbsp;': '{nbsp}',
+        '&amp;': '&',
+        '&lt;': '<',
+        '&gt;': '>',
+        '&quot;': '"',
+        '&apos;': "'",
+    }
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        lines = content.split('\n')
+        if line < 1 or line > len(lines):
+            return FixResult(success=False, error="Invalid line number", method="pattern")
+        
+        target_line = lines[line - 1]
+        
+        for entity, replacement in self.ENTITY_MAP.items():
+            if entity in target_line:
+                old_string = target_line
+                new_string = target_line.replace(entity, replacement)
+                return FixResult(
+                    success=True,
+                    old_string=old_string,
+                    new_string=new_string,
+                    method="pattern",
+                )
+        
+        return FixResult(success=False, error="Entity not found", method="pattern")
+
+
+class AssemblyContentsFixer(PatternFixer):
+    """
+    AssemblyContents - Flags for manual review (NO auto-fix).
+    
+    This rule detects plain text content between include directives in assemblies.
+    Auto-fixing is NOT appropriate because:
+    1. The content isn't wrong - it's just in the wrong place
+    2. It should be MOVED to a module file, not deleted
+    3. This requires human judgment about where to put the content
+    
+    This fixer analyzes the structure and provides actionable guidance.
+    """
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        """Analyze and flag for manual review with specific guidance."""
+        import re
+        
+        lines = content.split('\n')
+        
+        # Find all include directives
+        include_lines = []
+        for i, line_content in enumerate(lines):
+            if line_content.strip().startswith('include::'):
+                include_lines.append(i + 1)  # 1-based
+        
+        if len(include_lines) < 2:
+            return FixResult(
+                success=False,
+                error="MANUAL_REVIEW:Only one include directive found - cannot determine content placement issue",
+                method="analysis"
+            )
+        
+        # Find content between includes
+        problem_sections = []
+        for i in range(len(include_lines) - 1):
+            start = include_lines[i]
+            end = include_lines[i + 1]
+            
+            # Check for non-empty, non-comment content between includes
+            for j in range(start, end - 1):
+                if j < len(lines):
+                    line_content = lines[j].strip()
+                    # Skip empty lines, comments, conditionals
+                    if (line_content and 
+                        not line_content.startswith('//') and
+                        not line_content.startswith('ifdef::') and
+                        not line_content.startswith('ifndef::') and
+                        not line_content.startswith('endif::') and
+                        not line_content.startswith('ifeval::') and
+                        not line_content.startswith(':') and
+                        not line_content.startswith('include::')):
+                        problem_sections.append({
+                            'line': j + 1,
+                            'content': line_content[:60] + ('...' if len(line_content) > 60 else ''),
+                            'between': f"includes at lines {start} and {end}"
+                        })
+        
+        if not problem_sections:
+            return FixResult(
+                success=False,
+                error="MANUAL_REVIEW:Could not identify specific content to move",
+                method="analysis"
+            )
+        
+        # Build detailed guidance
+        lines_list = [str(p['line']) for p in problem_sections[:5]]
+        guidance = f"MANUAL_REVIEW:Lines {', '.join(lines_list)} contain content between include directives. " \
+                   f"ACTION: Move this content to a separate module file and include it. " \
+                   f"Content preview: '{problem_sections[0]['content']}'"
+        
+        return FixResult(
+            success=False,
+            error=guidance,
+            method="manual_review"
+        )
+
+
+# =============================================================================
+# TIER 2: Template Fixers (LLM once, then propagate)
+# =============================================================================
+
+class TemplateFixer:
+    """
+    Base class for template fixers.
+    
+    Uses LLM for the first instance of a rule, then learns the pattern
+    and applies it to remaining instances without LLM.
+    """
+    
+    def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2, rule: str):
+        self.llm = llm_client
+        self.memory = memory
+        self.rule = rule
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        """Fix using learned pattern or LLM."""
+        
+        # Check if we have a learned pattern
+        if self.memory.has_learned_fix(self.rule):
+            result = self._apply_learned_pattern(filepath, content, line)
+            if result.success:
+                return result
+        
+        # No pattern or pattern didn't work - use LLM
+        return self._fix_with_llm(filepath, content, line, message)
+    
+    def _apply_learned_pattern(self, filepath: Path, content: str, line: int) -> FixResult:
+        """Apply a learned pattern to the content."""
+        # Override in subclass with rule-specific logic
+        return FixResult(success=False, error="Not implemented", method="template_propagation")
+    
+    def _fix_with_llm(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        """Use LLM to generate a fix."""
+        # Get rule context
+        rule_info = get_rule(self.rule)
+        prompt_context = get_prompt_context(self.rule) if rule_info else ""
+        
+        # Extract context around the issue
+        lines = content.split('\n')
+        start = max(0, line - 5)
+        end = min(len(lines), line + 5)
+        context_lines = []
+        for i in range(start, end):
+            marker = " >> " if i == line - 1 else "    "
+            context_lines.append(f"{i+1:4d}{marker}{lines[i]}")
+        context = '\n'.join(context_lines)
+        
+        prompt = f"""Fix this DITA compatibility issue.
+
+RULE: {self.rule}
+FILE: {filepath.name}
+LINE: {line}
+MESSAGE: {message}
+
+{prompt_context}
+
+CONTEXT (the >> marks the problematic line):
+```
+{context}
+```
+
+Return ONLY a JSON object:
+{{
+    "old_string": "exact text to replace (must match file exactly)",
+    "new_string": "replacement text"
+}}"""
+        
+        response = self.llm.generate(prompt, expect_json=True)
+        
+        if not response.success:
+            return FixResult(
+                success=False,
+                error=response.error,
+                method="llm",
+                tokens_used=response.tokens_used,
+            )
+        
+        try:
+            old_string = response.parsed.get("old_string", "")
+            new_string = response.parsed.get("new_string", "")
+            
+            if not old_string or old_string not in content:
+                return FixResult(
+                    success=False,
+                    error="old_string not found in content",
+                    method="llm",
+                    tokens_used=response.tokens_used,
+                )
+            
+            # Learn this fix pattern for future use
+            self.memory.learn_fix(
+                rule=self.rule,
+                old_string=old_string,
+                new_string=new_string,
+                pattern_type=self._detect_pattern_type(old_string, new_string),
+            )
+            
+            return FixResult(
+                success=True,
+                old_string=old_string,
+                new_string=new_string,
+                method="llm",
+                tokens_used=response.tokens_used,
+            )
+        
+        except Exception as e:
+            return FixResult(
+                success=False,
+                error=f"Failed to parse LLM response: {e}",
+                method="llm",
+                tokens_used=response.tokens_used,
+            )
+    
+    def _detect_pattern_type(self, old: str, new: str) -> str:
+        """Detect the type of transformation."""
+        if len(new) > len(old):
+            return "insert"
+        elif len(new) < len(old):
+            return "remove"
+        else:
+            return "replace"
+
+
+class ShortDescriptionTemplateFixer(TemplateFixer):
+    """
+    Template fixer for ShortDescription rule.
+    
+    This fixer adds [role="_abstract"] before the first paragraph AFTER the title.
+    It uses deterministic pattern matching - no LLM needed.
+    """
+    
+    import re
+    ABSTRACT_PATTERN = re.compile(r'^\[role=["\']?_abstract["\']?\]', re.MULTILINE)
+    TITLE_PATTERN = re.compile(r'^=\s+.+$', re.MULTILINE)
+    # Pattern to detect SNIPPET content type - these files should NOT have abstracts
+    SNIPPET_PATTERN = re.compile(r'^:_mod-docs-content-type:\s*SNIPPET', re.MULTILINE | re.IGNORECASE)
+    
+    def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
+        super().__init__(llm_client, memory, "ShortDescription")
+    
+    def _is_snippet_file(self, content: str) -> bool:
+        """Check if file is a SNIPPET type - these don't need abstracts."""
+        return bool(self.SNIPPET_PATTERN.search(content))
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        """
+        Fix ShortDescription by adding [role="_abstract"] before first paragraph.
+        
+        This is a deterministic fix - we ALWAYS use pattern matching, not LLM.
+        The pattern is: find first paragraph AFTER the document title.
+        """
+        # SNIPPET files should NOT have abstracts - skip them
+        if self._is_snippet_file(content):
+            return FixResult(
+                success=True,
+                method="skipped",
+                error="SNIPPET files do not need abstracts"
+            )
+        
+        # Already has abstract? Nothing to do
+        if self.ABSTRACT_PATTERN.search(content):
+            return FixResult(success=True, method="pattern")
+        
+        # Use deterministic pattern - NO LLM needed for ShortDescription
+        return self._find_and_mark_abstract(filepath, content)
+    
+    def _find_and_mark_abstract(self, filepath: Path, content: str) -> FixResult:
+        """
+        Find the first paragraph after the title and mark it as abstract.
+        
+        The abstract marker [role="_abstract"] goes BEFORE the first content
+        paragraph that appears AFTER the document title (= Title).
+        """
+        lines = content.split('\n')
+        
+        # Step 1: Find the document title line (starts with '= ')
+        title_line_idx = None
+        for i, line_content in enumerate(lines):
+            if line_content.startswith('= '):
+                title_line_idx = i
+                break
+        
+        if title_line_idx is None:
+            return FixResult(
+                success=False, 
+                error="No document title found (line starting with '= ')", 
+                method="pattern"
+            )
+        
+        # Step 2: Scan FORWARD from title to find first content paragraph
+        in_conditional = 0
+        
+        for i in range(title_line_idx + 1, len(lines)):
+            line_content = lines[i]
+            stripped = line_content.strip()
+            
+            # Skip empty lines
+            if not stripped:
+                continue
+            
+            # Skip document attributes (e.g., :toc:, :icons:)
+            if stripped.startswith(':') and ':' in stripped[1:]:
+                continue
+            
+            # Track conditional blocks - don't mark content inside conditionals
+            if stripped.startswith(('ifdef::', 'ifndef::', 'ifeval::')):
+                in_conditional += 1
+                continue
+            if stripped.startswith('endif::'):
+                in_conditional = max(0, in_conditional - 1)
+                continue
+            
+            # Skip include directives
+            if stripped.startswith('include::'):
+                continue
+            
+            # Skip comments
+            if stripped.startswith('//'):
+                continue
+            
+            # Skip block attributes like [id="..."], [source], etc.
+            if stripped.startswith('['):
+                continue
+            
+            # Skip block titles like .My Title
+            if stripped.startswith('.') and not stripped.startswith('..'):
+                continue
+            
+            # Skip section headings (== , === , etc.)
+            if stripped.startswith('=='):
+                continue
+            
+            # Found first content paragraph (must be outside conditionals)
+            if in_conditional == 0 and len(stripped) > 10:  # Reasonable paragraph length
+                old_string = line_content
+                new_string = f'[role="_abstract"]\n{line_content}'
+                return FixResult(
+                    success=True,
+                    old_string=old_string,
+                    new_string=new_string,
+                    method="pattern",
+                )
+        
+        return FixResult(
+            success=False, 
+            error="No suitable paragraph found after title", 
+            method="pattern"
+        )
+    
+    def _apply_learned_pattern(self, filepath: Path, content: str, line: int) -> FixResult:
+        """Apply ShortDescription pattern - delegates to _find_and_mark_abstract."""
+        if self._is_snippet_file(content):
+            return FixResult(
+                success=True,
+                method="skipped",
+                error="SNIPPET files do not need abstracts"
+            )
+        
+        if self.ABSTRACT_PATTERN.search(content):
+            return FixResult(success=True, method="pattern")
+        
+        return self._find_and_mark_abstract(filepath, content)
+
+
+class BlockTitleTemplateFixer(TemplateFixer):
+    """Template fixer for BlockTitle rule."""
+    
+    def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
+        super().__init__(llm_client, memory, "BlockTitle")
+
+
+class DocumentTitleTemplateFixer(TemplateFixer):
+    """Template fixer for DocumentTitle rule."""
+    
+    def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
+        super().__init__(llm_client, memory, "DocumentTitle")
+
+
+# =============================================================================
+# TIER 3: LLM Fixers (LLM each time)
+# =============================================================================
+
+class LLMFixer:
+    """
+    Fixer that uses LLM for each instance.
+    
+    Used for complex issues that require understanding context
+    and can't be easily templated.
+    """
+    
+    def __init__(self, llm_client: LLMClient, rule: str):
+        self.llm = llm_client
+        self.rule = rule
+    
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        """Use LLM to generate a fix."""
+        rule_info = get_rule(self.rule)
+        prompt_context = get_prompt_context(self.rule) if rule_info else ""
+        
+        # Extract context
+        lines = content.split('\n')
+        start = max(0, line - 8)
+        end = min(len(lines), line + 8)
+        context_lines = []
+        for i in range(start, end):
+            marker = " >> " if i == line - 1 else "    "
+            context_lines.append(f"{i+1:4d}{marker}{lines[i]}")
+        context = '\n'.join(context_lines)
+        
+        prompt = f"""Fix this DITA compatibility issue.
+
+RULE: {self.rule}
+FILE: {filepath.name}
+LINE: {line}
+MESSAGE: {message}
+
+{prompt_context}
+
+CONTEXT (the >> marks the problematic line):
+```
+{context}
+```
+
+IMPORTANT:
+- Make the MINIMAL change needed
+- Preserve all existing content and structure
+- The old_string must EXACTLY match text in the file
+
+Return ONLY a JSON object:
+{{
+    "old_string": "exact text to replace",
+    "new_string": "replacement text"
+}}"""
+        
+        response = self.llm.generate(prompt, expect_json=True)
+        
+        if not response.success:
+            return FixResult(
+                success=False,
+                error=response.error,
+                method="llm",
+                tokens_used=response.tokens_used,
+            )
+        
+        try:
+            old_string = response.parsed.get("old_string", "")
+            new_string = response.parsed.get("new_string", "")
+            
+            if not old_string or old_string not in content:
+                return FixResult(
+                    success=False,
+                    error="old_string not found in content",
+                    method="llm",
+                    tokens_used=response.tokens_used,
+                )
+            
+            return FixResult(
+                success=True,
+                old_string=old_string,
+                new_string=new_string,
+                method="llm",
+                tokens_used=response.tokens_used,
+            )
+        
+        except Exception as e:
+            return FixResult(
+                success=False,
+                error=f"Failed to parse LLM response: {e}",
+                method="llm",
+                tokens_used=response.tokens_used,
+            )
+
+
+# =============================================================================
+# Fixer Registry
+# =============================================================================
+
+class FixerRegistry:
+    """
+    Registry of all fixers organized by tier.
+    
+    Routes issues to the appropriate fixer based on rule type.
+    """
+    
+    # Rule to tier mapping
+    TIER_MAP: Dict[str, FixerTier] = {
+        # TIER 1: Pattern-based (no LLM)
+        "LineBreak": FixerTier.PATTERN,
+        "PageBreak": FixerTier.PATTERN,
+        "ThematicBreak": FixerTier.PATTERN,
+        "AuthorLine": FixerTier.PATTERN,
+        "EntityReference": FixerTier.PATTERN,
+        "TagDirective": FixerTier.PATTERN,
+        "IncludeDirective": FixerTier.PATTERN,
+        "ConditionalCode": FixerTier.PATTERN,
+        "TableFooter": FixerTier.PATTERN,
+        "DiscreteHeading": FixerTier.PATTERN,
+        "EquationFormula": FixerTier.PATTERN,
+        
+        # TIER 2: Template-based (LLM once, then propagate)
+        "ShortDescription": FixerTier.TEMPLATE,
+        "BlockTitle": FixerTier.TEMPLATE,
+        "DocumentTitle": FixerTier.TEMPLATE,
+        "DocumentId": FixerTier.TEMPLATE,
+        "AdmonitionTitle": FixerTier.TEMPLATE,
+        "ExampleBlock": FixerTier.TEMPLATE,
+        "SidebarBlock": FixerTier.TEMPLATE,
+        "RelatedLinks": FixerTier.TEMPLATE,
+        
+        # TIER 3: LLM-required (each instance)
+        "TaskStep": FixerTier.LLM,
+        "TaskContents": FixerTier.LLM,
+        "TaskSection": FixerTier.LLM,
+        "TaskTitle": FixerTier.LLM,
+        "TaskDuplicate": FixerTier.LLM,
+        "TaskExample": FixerTier.LLM,
+        "NestedSection": FixerTier.LLM,
+        "CalloutList": FixerTier.LLM,
+        "AttributeReference": FixerTier.LLM,
+        
+        # Special: Manual review only (no auto-fix)
+        "AssemblyContents": FixerTier.PATTERN,  # Uses pattern fixer that flags for manual review
+    }
+    
+    def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
+        self.llm = llm_client
+        self.memory = memory
+        
+        # Initialize pattern fixers (no LLM needed)
+        self.pattern_fixers: Dict[str, PatternFixer] = {
+            "LineBreak": LineBreakFixer(),
+            "PageBreak": PageBreakFixer(),
+            "ThematicBreak": ThematicBreakFixer(),
+            "AuthorLine": AuthorLineFixer(),
+            "EntityReference": EntityReferenceFixer(),
+            "AssemblyContents": AssemblyContentsFixer(),  # Flags for manual review
+        }
+        
+        # Initialize template fixers (LLM once, then propagate)
+        self.template_fixers: Dict[str, TemplateFixer] = {
+            "ShortDescription": ShortDescriptionTemplateFixer(llm_client, memory),
+            "BlockTitle": BlockTitleTemplateFixer(llm_client, memory),
+            "DocumentTitle": DocumentTitleTemplateFixer(llm_client, memory),
+        }
+        
+        # Specialized fixer for table line breaks
+        self.table_line_break_fixer = TableLineBreakFixer(llm_client)
+        
+        # LLM fixers are created on-demand
+    
+    def get_fixer(self, rule: str) -> Any:
+        """Get the appropriate fixer for a rule."""
+        # Check pattern fixers
+        if rule in self.pattern_fixers:
+            return self.pattern_fixers[rule]
+        
+        # Check template fixers
+        if rule in self.template_fixers:
+            return self.template_fixers[rule]
+        
+        # Default to LLM fixer
+        return LLMFixer(self.llm, rule)
+    
+    def get_tier(self, rule: str) -> int:
+        """Get the tier number for a rule (1, 2, or 3)."""
+        tier = self.TIER_MAP.get(rule, FixerTier.LLM)
+        return tier.value
+    
+    def get_tier_label(self, rule: str) -> str:
+        """Get human-readable tier label."""
+        tier = self.get_tier(rule)
+        labels = {1: "PATTERN", 2: "TEMPLATE", 3: "LLM"}
+        return labels.get(tier, "LLM")
+    
+    def get_tier_map(self) -> Dict[str, int]:
+        """Get mapping of all rules to tier numbers."""
+        return {rule: tier.value for rule, tier in self.TIER_MAP.items()}
