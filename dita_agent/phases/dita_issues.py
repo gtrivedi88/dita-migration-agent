@@ -155,7 +155,12 @@ class DITAIssuesPhase:
         
         console.print(f"  [dim]Found {len(all_issues)} total issues:[/dim]")
         console.print(f"    [yellow]Errors/Warnings: {len(actionable_issues)}[/yellow]")
-        console.print(f"    [dim]Suggestions (skipped): {len(suggestions)}[/dim]")
+        if suggestions:
+            console.print(f"    [dim]Suggestions: {len(suggestions)}[/dim] [italic dim](stylistic - won't block DITA conversion)[/italic dim]")
+        
+        # Generate SKIPPED_SUGGESTIONS.md if there are suggestions
+        if suggestions:
+            self._generate_suggestions_doc(suggestions)
         
         if not actionable_issues:
             console.print("  [green]No errors or warnings to fix![/green]")
@@ -535,3 +540,105 @@ class DITAIssuesPhase:
             console.print(f"      Tokens used: {result.total_tokens:,}")
         
         console.print(f"\n    Duration: {result.duration_seconds:.1f}s")
+    
+    def _generate_suggestions_doc(self, suggestions: List) -> None:
+        """
+        Generate SKIPPED_SUGGESTIONS.md with AI-ready prompts for stylistic improvements.
+        
+        These are Vale 'suggestion' severity items - they won't block DITA conversion
+        but could improve documentation quality.
+        """
+        from datetime import datetime
+        
+        suggestions_dir = self.project_dir / ".dita-agent"
+        suggestions_dir.mkdir(exist_ok=True)
+        doc_path = suggestions_dir / "SKIPPED_SUGGESTIONS.md"
+        
+        # Group suggestions by rule
+        by_rule: dict = {}
+        for s in suggestions:
+            rule = s.rule.split('.')[-1] if '.' in s.rule else s.rule
+            if rule not in by_rule:
+                by_rule[rule] = []
+            by_rule[rule].append(s)
+        
+        lines = [
+            "# Skipped Suggestions",
+            "",
+            "> **These are OPTIONAL improvements** - they won't block DITA conversion.",
+            "> Vale marked these as 'suggestion' severity (not 'error' or 'warning').",
+            "> Fix them if you want to improve documentation quality.",
+            "",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "",
+            "---",
+            "",
+            "## Why Were These Skipped?",
+            "",
+            "The DITA Migration Agent focuses on **errors and warnings** that would block",
+            "DITA conversion. Suggestions are stylistic improvements that are optional.",
+            "",
+            "Reference: [asciidoctor-dita-vale](https://github.com/jhradilek/asciidoctor-dita-vale)",
+            "by Jaromír Hradílek defines these severity levels.",
+            "",
+            "---",
+            "",
+            "## Summary",
+            "",
+            f"| Rule | Count |",
+            f"|------|-------|",
+        ]
+        
+        for rule, items in sorted(by_rule.items()):
+            lines.append(f"| {rule} | {len(items)} |")
+        
+        lines.extend([
+            "",
+            f"**Total: {len(suggestions)} suggestions**",
+            "",
+            "---",
+            "",
+            "## AI-Ready Prompts",
+            "",
+            "Copy-paste these prompts into Cursor, Claude, or other AI assistants.",
+            "",
+        ])
+        
+        # Generate prompts for each rule group
+        for rule, items in sorted(by_rule.items()):
+            lines.extend([
+                f"### {rule} ({len(items)} items)",
+                "",
+                "<details>",
+                "<summary>Click to expand prompt</summary>",
+                "",
+                "```",
+                f"Fix the following {rule} suggestions in my AsciiDoc files.",
+                f"These are stylistic improvements (Vale 'suggestion' level).",
+                "",
+            ])
+            
+            # List all files with this suggestion
+            for item in items[:20]:  # Limit to first 20
+                rel_path = item.filepath
+                try:
+                    rel_path = item.filepath.relative_to(self.project_dir)
+                except ValueError:
+                    pass
+                lines.append(f"- @{rel_path}:{item.line} - {item.message}")
+            
+            if len(items) > 20:
+                lines.append(f"- ... and {len(items) - 20} more")
+            
+            lines.extend([
+                "",
+                "For each file, make the suggested improvement while preserving meaning.",
+                "```",
+                "",
+                "</details>",
+                "",
+            ])
+        
+        # Write the file
+        doc_path.write_text('\n'.join(lines))
+        console.print(f"    [dim]📄 See: .dita-agent/SKIPPED_SUGGESTIONS.md[/dim]")

@@ -468,8 +468,9 @@ class ShortDescriptionTemplateFixer(TemplateFixer):
         """
         Fix ShortDescription by adding [role="_abstract"] before first paragraph.
         
-        This is a deterministic fix - we ALWAYS use pattern matching, not LLM.
-        The pattern is: find first paragraph AFTER the document title.
+        Handles two cases:
+        1. No abstract marker → Add marker before first paragraph
+        2. Abstract marker exists but no paragraph → Generate paragraph with LLM
         """
         # SNIPPET files should NOT have abstracts - skip them
         if self._is_snippet_file(content):
@@ -479,11 +480,16 @@ class ShortDescriptionTemplateFixer(TemplateFixer):
                 error="SNIPPET files do not need abstracts"
             )
         
-        # Already has abstract? Nothing to do
+        # Check if abstract marker already exists
         if self.ABSTRACT_PATTERN.search(content):
-            return FixResult(success=True, method="pattern")
+            # Verify there's actually a paragraph after the abstract marker
+            if self._has_paragraph_after_abstract(content):
+                return FixResult(success=True, method="pattern")
+            else:
+                # Abstract marker exists but NO paragraph - need LLM to generate one
+                return self._generate_abstract_paragraph(filepath, content)
         
-        # Use deterministic pattern - NO LLM needed for ShortDescription
+        # No abstract marker - use deterministic pattern to add one
         return self._find_and_mark_abstract(filepath, content)
     
     def _find_and_mark_abstract(self, filepath: Path, content: str) -> FixResult:
@@ -569,8 +575,152 @@ class ShortDescriptionTemplateFixer(TemplateFixer):
             method="pattern"
         )
     
+    def _has_paragraph_after_abstract(self, content: str) -> bool:
+        """
+        Check if there's a real content paragraph after [role="_abstract"].
+        
+        Returns False if abstract marker is followed only by:
+        - Empty lines
+        - Include directives
+        - Comments
+        - Section headings
+        """
+        lines = content.split('\n')
+        
+        # Find the abstract marker line
+        abstract_line_idx = None
+        for i, line_content in enumerate(lines):
+            if '[role=' in line_content and '_abstract' in line_content:
+                abstract_line_idx = i
+                break
+        
+        if abstract_line_idx is None:
+            return False
+        
+        # Check lines AFTER the abstract marker
+        for i in range(abstract_line_idx + 1, min(abstract_line_idx + 10, len(lines))):
+            stripped = lines[i].strip()
+            
+            # Skip empty lines
+            if not stripped:
+                continue
+            
+            # Skip include directives - NOT a paragraph
+            if stripped.startswith('include::'):
+                return False  # Include right after abstract = no paragraph
+            
+            # Skip comments
+            if stripped.startswith('//'):
+                continue
+            
+            # Skip conditionals
+            if stripped.startswith(('ifdef::', 'ifndef::', 'ifeval::', 'endif::')):
+                continue
+            
+            # Skip section headings
+            if stripped.startswith('=='):
+                return False  # Section heading = no abstract paragraph
+            
+            # Found real content paragraph!
+            if len(stripped) > 10 and not stripped.startswith('['):
+                return True
+        
+        return False
+    
+    def _generate_abstract_paragraph(self, filepath: Path, content: str) -> FixResult:
+        """
+        Use LLM to generate an abstract paragraph when marker exists but no paragraph.
+        
+        This handles the case where [role="_abstract"] was added but there's no
+        content paragraph after it - we need to generate one based on the title.
+        """
+        import re
+        
+        lines = content.split('\n')
+        
+        # Find the title
+        title = None
+        for line_content in lines:
+            if line_content.startswith('= '):
+                title = line_content[2:].strip()
+                break
+        
+        if not title:
+            return FixResult(
+                success=False,
+                error="Cannot generate abstract - no title found",
+                method="llm"
+            )
+        
+        # Find the abstract marker line to know where to insert
+        abstract_line_idx = None
+        abstract_line = None
+        for i, line_content in enumerate(lines):
+            if '[role=' in line_content and '_abstract' in line_content:
+                abstract_line_idx = i
+                abstract_line = line_content
+                break
+        
+        if abstract_line_idx is None:
+            return FixResult(
+                success=False,
+                error="Abstract marker not found",
+                method="llm"
+            )
+        
+        # Build prompt for LLM
+        prompt = f"""Generate a SHORT introductory paragraph (1-2 sentences) for this AsciiDoc document.
+
+Title: {title}
+File: {filepath.name}
+
+Requirements:
+1. Maximum 2 sentences
+2. Describe what the reader will learn/do
+3. Use active voice
+4. Don't start with "This document..." or "This topic..."
+5. Return ONLY the paragraph text, nothing else
+
+Example output for "Installing the application":
+Install the application on your system using the package manager or manual installation method.
+
+Your paragraph:"""
+
+        try:
+            response = self.llm.generate(prompt, expect_json=False)
+            paragraph = response.content.strip()
+            
+            # Clean up any quotes or extra formatting
+            paragraph = paragraph.strip('"\'')
+            
+            if not paragraph or len(paragraph) < 10:
+                return FixResult(
+                    success=False,
+                    error="LLM generated empty or too short paragraph",
+                    method="llm"
+                )
+            
+            # The old string is just the abstract marker line
+            old_string = abstract_line
+            # New string is abstract marker + generated paragraph
+            new_string = f'{abstract_line}\n{paragraph}'
+            
+            return FixResult(
+                success=True,
+                old_string=old_string,
+                new_string=new_string,
+                method="llm",
+            )
+            
+        except Exception as e:
+            return FixResult(
+                success=False,
+                error=f"LLM generation failed: {str(e)}",
+                method="llm"
+            )
+    
     def _apply_learned_pattern(self, filepath: Path, content: str, line: int) -> FixResult:
-        """Apply ShortDescription pattern - delegates to _find_and_mark_abstract."""
+        """Apply ShortDescription pattern - delegates to main fix logic."""
         if self._is_snippet_file(content):
             return FixResult(
                 success=True,
@@ -579,7 +729,10 @@ class ShortDescriptionTemplateFixer(TemplateFixer):
             )
         
         if self.ABSTRACT_PATTERN.search(content):
-            return FixResult(success=True, method="pattern")
+            if self._has_paragraph_after_abstract(content):
+                return FixResult(success=True, method="pattern")
+            else:
+                return self._generate_abstract_paragraph(filepath, content)
         
         return self._find_and_mark_abstract(filepath, content)
 
