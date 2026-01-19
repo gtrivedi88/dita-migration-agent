@@ -150,7 +150,9 @@ class DITAIssuesPhase:
         actionable_issues = [i for i in all_issues if i.severity in ("error", "warning")]
         suggestions = [i for i in all_issues if i.severity == "suggestion"]
         
-        result.issues_found = len(all_issues)
+        # IMPORTANT: issues_found should only count ACTIONABLE issues for accurate scoring
+        # Suggestions are tracked separately and don't affect the success/failure calculation
+        result.issues_found = len(actionable_issues)
         result.issues_skipped = len(suggestions)
         
         console.print(f"  [dim]Found {len(all_issues)} total issues:[/dim]")
@@ -338,19 +340,39 @@ class DITAIssuesPhase:
                 fix_result = table_fixer.fix(filepath, content, issue.line, issue.message)
                 
                 # If table fixer already processed this row (multi ` +` in same row), skip
+                # Count this as "fixed" since the row WAS fixed, just in a previous iteration
                 if fix_result.error == "Row already fixed in this session":
                     console.print(f"      [dim]~ {filepath.name}:{issue.line} - row already fixed[/dim]")
+                    stats["fixed"] += 1  # Count as fixed (the row fix already handled this)
+                    # Record in memory for consistent tracking (issue resolved by earlier row fix)
+                    self.memory.record_fix(
+                        filepath=filepath,
+                        rule=rule,
+                        line=issue.line,
+                        status=FixStatus.SUCCESS,
+                        method="row_already_fixed",
+                    )
                     continue
                 
                 # If intentional formatting detected (CLI args, code examples), skip auto-fix
                 if fix_result.error == "INTENTIONAL_FORMATTING":
                     console.print(f"      [yellow]⚠ {filepath.name}:{issue.line} - intentional formatting (manual review)[/yellow]")
+                    # Record in memory for accurate tracking
+                    self.memory.record_fix(
+                        filepath=filepath,
+                        rule=rule,
+                        line=issue.line,
+                        status=FixStatus.MANUAL_REVIEW,
+                        method="analysis",
+                        error="Intentional formatting (CLI args or code examples)",
+                    )
                     self.memory.record_manual_review(
                         filepath=filepath,
                         rule=rule,
                         line=issue.line,
                         message=issue.message,
                         reason="Intentional formatting (CLI args or code examples) - manual review required",
+                        already_counted=True,
                     )
                     stats["failed"] += 1
                     continue
@@ -366,6 +388,14 @@ class DITAIssuesPhase:
                     if write_error:
                         console.print(f"      [red]✗ {filepath.name} - Write error: {write_error}[/red]")
                         stats["failed"] += 1
+                        self.memory.record_fix(
+                            filepath=filepath,
+                            rule=rule,
+                            line=issue.line,
+                            status=FixStatus.FAILED,
+                            method=fix_result.method,
+                            error=f"Write error: {write_error}",
+                        )
                         continue
                     
                     # Verify the fix (pass old/new strings for content-based verification)
@@ -404,9 +434,19 @@ class DITAIssuesPhase:
                             error="Verification failed",
                         )
                 else:
-                    # Dry run - just report
+                    # Dry run - just report what would have been done
                     console.print(f"      [dim]○ {filepath.name} (dry run)[/dim]")
                     stats["fixed"] += 1
+                    # Record in memory for accurate tracking (even in dry run)
+                    self.memory.record_fix(
+                        filepath=filepath,
+                        rule=rule,
+                        line=issue.line,
+                        status=FixStatus.SUCCESS,
+                        method=f"{fix_result.method}_dry_run",
+                        old_string=fix_result.old_string,
+                        new_string=fix_result.new_string,
+                    )
             
             elif fix_result.success and fix_result.method == "skipped":
                 # Successfully determined no action needed (e.g., SNIPPET files)
@@ -414,11 +454,28 @@ class DITAIssuesPhase:
                 console.print(f"      [dim]○ {filepath.name} - {fix_result.error or 'No action needed'}[/dim]")
                 # Don't add to manual review, count as handled (not failed)
                 stats["fixed"] += 1
+                # Record in memory for accurate tracking
+                self.memory.record_fix(
+                    filepath=filepath,
+                    rule=rule,
+                    line=issue.line,
+                    status=FixStatus.SKIPPED,
+                    method="skipped",
+                    error=fix_result.error,
+                )
             
             elif fix_result.success and not fix_result.old_string:
                 # Success but nothing to change (already correct)
                 console.print(f"      [dim]○ {filepath.name} - Already correct[/dim]")
                 stats["fixed"] += 1
+                # Record in memory for accurate tracking
+                self.memory.record_fix(
+                    filepath=filepath,
+                    rule=rule,
+                    line=issue.line,
+                    status=FixStatus.SUCCESS,
+                    method="already_correct",
+                )
             
             else:
                 # Fix failed or requires manual review
@@ -431,15 +488,25 @@ class DITAIssuesPhase:
                     console.print(f"      [magenta]📋 {filepath.name}:{issue.line} - Manual review required[/magenta]")
                     console.print(f"         [dim]{guidance[:80]}{'...' if len(guidance) > 80 else ''}[/dim]")
                     
+                    # Record in memory - this is a manual review, not a failure
+                    self.memory.record_fix(
+                        filepath=filepath,
+                        rule=rule,
+                        line=issue.line,
+                        status=FixStatus.MANUAL_REVIEW,
+                        method=fix_result.method,
+                        error=guidance,
+                    )
+                    # Also add to manual review list (already_counted=True to avoid double-counting)
                     self.memory.record_manual_review(
                         filepath=filepath,
                         rule=rule,
                         line=issue.line,
                         message=issue.message,
                         reason=guidance,
+                        already_counted=True,
                     )
-                    # Don't count as failed - it's flagged for review
-                    stats["failed"] += 1  # Still count for summary purposes
+                    stats["failed"] += 1  # Count for phase result summary
                 else:
                     # Actual failure
                     console.print(f"      [yellow]→ {filepath.name} - {error_msg}[/yellow]")
@@ -448,16 +515,19 @@ class DITAIssuesPhase:
                         filepath=filepath,
                         rule=rule,
                         line=issue.line,
-                        status=FixStatus.MANUAL_REVIEW,
+                        status=FixStatus.FAILED,
                         method=fix_result.method,
                         error=error_msg,
                     )
+                    # Add to manual review list for documentation (already_counted=False 
+                    # since record_fix with FAILED status doesn't increment manual_review)
                     self.memory.record_manual_review(
                         filepath=filepath,
                         rule=rule,
                         line=issue.line,
                         message=issue.message,
                         reason=error_msg,
+                        already_counted=False,
                     )
         
         return stats

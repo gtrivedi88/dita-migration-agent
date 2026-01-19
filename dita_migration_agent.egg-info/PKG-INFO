@@ -29,77 +29,121 @@ Requires-Dist: black>=23.0.0; extra == "dev"
 Requires-Dist: ruff>=0.1.0; extra == "dev"
 Dynamic: license-file
 
-# DITA Migration Agent v2
+# DITA Migration Agent
 
-An autonomous AI-powered tool that automatically fixes AsciiDoc files to make them compatible with DITA (Darwin Information Typing Architecture) format.
+**Autonomous AI agent** that fixes DITA compatibility issues in AsciiDoc documentation. It understands your project structure, makes intelligent decisions, and keeps iterating until **zero errors and zero warnings**.
+
+## How to use the agent
+
+**Step 1: Get API Access**
+
+- Get your Gemini API key: https://gitlab.cee.redhat.com/models-corp/user-documentation/-/blob/main/getting-started.md
+- Gemini API URL: https://gitlab.cee.redhat.com/models-corp/user-documentation/-/blob/main/models/gemini.md
+
+**Step 2: Install and Run**
+
+```bash
+# Install
+pip install https://github.com/gtrivedi88/dita-migration-agent/archive/main.zip
+
+# Run - choose one of these commands (inside your AsciiDoc project)
+
+# Full migration in one go
+dita-agent run
+
+# Fix ONE assembly + all its included topics
+dita-agent run --assembly <path-to-assembly>
+
+# Fix specific topics (1-10 files)
+dita-agent run --topics topics/proc_installing.adoc topics/con_overview.adoc
+
+# Fix first N files with issues
+dita-agent run --limit 5
+
+# Preview without modifying
+dita-agent run --dry-run
+```
+
+**That's it.** The agent automatically:
+- Analyzes your project structure (assemblies, topics, snippets)
+- Sets up required tools (first run only)
+- Prompts for API credentials (first run only)
+- Fixes all DITA issues using rules + LLM
+- Verifies every fix is safe
+- Keeps going until **zero errors AND zero warnings**
+
+---
+
+
+## Usage
+
+### Scope Options
+
+| Option | What It Does | Use Case |
+|--------|--------------|----------|
+| `--assembly FILE` | Fixes assembly + ALL includes (recursive) | "Fix my Getting Started guide" |
+| `--topics FILE...` | Fixes exactly those files (max 10) | "Fix these specific files" |
+| `--limit N` | Fixes first N files with issues | "Small PR with 5 files" |
+| (none) | Fixes entire project | Full migration |
+
+### Example Workflow
+
+```bash
+# Day 1: Fix the "Getting Started" guide
+dita-agent run --assembly guides/assembly_getting-started.adoc
+git add . && git commit -m "Fix DITA issues in Getting Started guide"
+
+# Day 2: Fix the "Installation" guide  
+dita-agent run --assembly guides/assembly_installing.adoc
+git add . && git commit -m "Fix DITA issues in Installation guide"
+
+# Day 3: Fix 5 remaining files
+dita-agent run --limit 5
+git add . && git commit -m "Fix 5 more files"
+```
+
+---
 
 ## Features
 
-- **Three-Phase Processing**
-  - Phase 1: Content Type Assignment (`:_module-type:` attribute)
-  - Phase 2: Callouts Conversion (code block callouts to DITA format)
-  - Phase 3: All Other DITA Issues (30+ Vale rules)
+| Feature | Description |
+|---------|-------------|
+| **Three-Phase Processing** | Content Type → Callouts → All Other DITA Issues |
+| **Structure-Aware** | Understands assemblies vs topics vs snippets |
+| **Conditional-Safe** | Preserves `ifdef`/`ifndef`/`ifeval` blocks and `{variables}` |
+| **Targeted Edits** | Precise fixes (not full file rewrites) to preserve content |
+| **Incremental** | Processes in chunks, verifies each |
+| **Self-Correcting** | Automatic rollback on syntax errors |
+| **Learning Memory** | Learns fix patterns, propagates to similar issues |
+| **Cost-Efficient** | Pattern fixes first (FREE), LLM only when needed |
 
-- **LLM-Powered Fixes**
-  - Uses Gemini API for intelligent, context-aware fixes
-  - Targeted edits (not full file rewrites) to preserve content
-  - Automatic rollback on syntax errors
+### Three-Phase Processing
 
-- **Flexible Scope**
-  - Process entire project
-  - Single assembly with all includes
-  - Specific topic files
-  - First N files with issues
+| Phase | Description | Strategy |
+|-------|-------------|----------|
+| **Phase 1** | Content Type Assignment (`:_mod-docs-content-type:`) | LLM analysis |
+| **Phase 2** | Callouts Conversion (code block callouts) | External tool |
+| **Phase 3** | All Other DITA Issues (30+ Vale rules) | Rule-first + LLM |
 
-## Quick Start
+### Issues It Fixes
 
-### Installation
+| Issue | Description | Strategy |
+|-------|-------------|----------|
+| ShortDescription | Missing `[role="_abstract"]` | Pattern + LLM |
+| ContentType | Missing content type declaration | LLM |
+| TaskStep | Content after `.Procedure` not in list | LLM |
+| TaskSection | Sections inside procedures | LLM |
+| BlockTitle | Non-standard block titles | Pattern |
+| CalloutList | Callout markers in code | External tool |
+| ExampleBlock | Nested example blocks | LLM |
+| RelatedLinks | Non-link content in resources | LLM |
+| DocumentTitle | Missing document title | Pattern |
+| AuthorLine | Line after title interpreted as author | Pattern |
+| LineBreak | Hard line breaks (` +`) | Pattern + LLM |
+| AssemblyContents | Content in assemblies | Manual review |
+| **+ 18 more** | All DITA compatibility rules | Mixed |
 
-**Option 1: Direct Install (Recommended)**
-```bash
-pip install https://github.com/gtrivedi88/dita-migration-agent-v2/archive/main.zip
-```
-
-**Option 2: Clone & Install (Development)**
-```bash
-git clone https://github.com/gtrivedi88/dita-migration-agent-v2.git
-cd dita-migration-agent-v2
-pip install -e .
-```
-
-### Setup (One-Time)
-
-```bash
-dita-agent setup
-```
-
-This will:
-- Clone required tool repositories to `~/.dita-agent/tools/`
-- Check Vale installation
-- Configure Gemini API credentials
-- Create config at `~/.dita-agent/config.json`
-
-### Run Migration
-
-```bash
-# Navigate to your documentation project
-cd your-project
-
-# Process entire project
-dita-agent run
-
-# Process single assembly + all its includes
-dita-agent run --assembly path/to/master.adoc
-
-# Process specific topics (up to 10)
-dita-agent run --topics topic1.adoc topic2.adoc
-
-# Process first N files with issues
-dita-agent run --limit 5
-
-# Preview without making changes
-dita-agent run --dry-run
-```
+---
 
 ## Configuration
 
@@ -109,7 +153,7 @@ dita-agent run --dry-run
 {
   "provider": "gemini",
   "base_url": "https://generativelanguage.googleapis.com",
-  "model": "gemini-3-flash-preview",
+  "model": "gemini-2.5-flash-preview-05-20",
   "api_key": "your-api-key"
 }
 ```
@@ -119,11 +163,92 @@ dita-agent run --dry-run
 The agent creates a `.dita-agent/` directory in your project for:
 - Backup files (before each modification)
 - Session logs
-- Temporary files
+- Checkpoints (for resumable processing)
+- `MANUAL_REVIEW.md` (issues needing human review)
 
 This directory is automatically added to `.gitignore`.
 
-## Output
+### Reset & Troubleshooting
+
+```bash
+# Reset API credentials (re-prompts on next run)
+rm ~/.dita-agent/config.json
+
+# Clear all global cache and tools
+rm -rf ~/.dita-agent/
+
+# Clear project-specific cache and backups
+rm -rf .dita-agent/
+
+# Start completely fresh
+rm -rf ~/.dita-agent/ .dita-agent/
+dita-agent run  # Will re-setup everything
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    AUTONOMOUS DITA MIGRATION AGENT                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  1. SCOPE RESOLUTION                                                        │
+│     ├─ Entire project (default)                                             │
+│     ├─ Single assembly + all includes (recursive)                           │
+│     ├─ Specific topics (1-10 files)                                         │
+│     └─ First N files with issues                                            │
+│                                                                             │
+│  2. PHASE 1: CONTENT TYPE ASSIGNMENT                                        │
+│     └─ Adds :_mod-docs-content-type: attribute (ASSEMBLY/PROCEDURE/etc.)    │
+│                                                                             │
+│  3. PHASE 2: CALLOUTS CONVERSION                                            │
+│     └─ Converts code callouts to DITA-compatible format                     │
+│                                                                             │
+│  4. PHASE 3: ALL OTHER DITA ISSUES (Rule-First Architecture)                │
+│     ├─ Scans with Vale (30+ DITA rules)                                     │
+│     ├─ Groups issues by rule type                                           │
+│     ├─ Tier 1: Pattern Fixers (regex/template - FREE)                       │
+│     ├─ Tier 2: Template Fixers (LLM learns pattern, propagates)             │
+│     ├─ Tier 3: LLM Fixers (complex, context-dependent)                      │
+│     └─ Learning Memory (stores successful patterns)                         │
+│                                                                             │
+│  5. VERIFICATION & VALIDATION                                               │
+│     ├─ Syntax check after every fix                                         │
+│     ├─ Automatic rollback on errors                                         │
+│     └─ Vale re-scan to confirm fix worked                                   │
+│                                                                             │
+│  6. OUTPUT                                                                  │
+│     ├─ Success report with statistics                                       │
+│     └─ MANUAL_REVIEW.md (AI-ready prompts for remaining issues)             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Autonomous Loop
+
+```
+    ┌────────────────────────────────────────────────────────────┐
+    │                                                            │
+    │     SCAN → BACKUP → FIX → VERIFY → VALIDATE                │
+    │       │                              │                     │
+    │       │     (if errors introduced)   │                     │
+    │       │             ↓                │                     │
+    │       │        ROLLBACK ────────────→│                     │
+    │       │                              │                     │
+    │       │     (if zero issues)         │                     │
+    │       │             ↓                │                     │
+    │       └──────── SUCCESS! ←──────────┘                      │
+    │                                                            │
+    │     REPEAT until: ZERO errors + ZERO warnings              │
+    │                                                            │
+    └────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Output Examples
 
 ### Success
 
@@ -156,56 +281,26 @@ When some issues can't be fixed automatically:
 ════════════════════════════════════════════════════════════
 ```
 
-## Requirements
+The `MANUAL_REVIEW.md` file contains **AI-ready prompts** that you can copy-paste directly into Cursor, Claude, or other AI assistants to fix the remaining issues.
 
-- Python 3.10+
-- Git (for cloning tool repositories)
-- Vale linter
-- Gemini API access
+---
 
-## External Dependencies
+## Credits
 
-| Repository | Purpose |
-|------------|---------|
-| [asciidoctor-dita-vale](https://github.com/jhradilek/asciidoctor-dita-vale) | Vale rules for DITA validation |
-| [callouts-conversion](https://github.com/gtrivedi88/callouts-conversion) | Automated callout fixing tool |
+This project builds on the work of several contributors and tools:
 
-## Architecture
+### Core Dependencies
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  USER INPUT: dita-agent run --assembly master.adoc     │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  SCOPE RESOLUTION                                       │
-│  Identify all files to process (assembly + includes)   │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 1: CONTENT TYPE ASSIGNMENT                       │
-│  Add :_module-type: attribute to all files             │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 2: CALLOUTS CONVERSION                           │
-│  Convert callout markers to DITA-compatible format     │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 3: ALL OTHER DITA ISSUES                         │
-│  Fix remaining issues (ShortDescription, TaskStep...)  │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  OUTPUT: Success report + optional MANUAL_REVIEW.md    │
-└─────────────────────────────────────────────────────────┘
-```
+| Project | Author | Purpose |
+|---------|--------|---------|
+| [asciidoctor-dita-vale](https://github.com/jhradilek/asciidoctor-dita-vale) | **Jaromír Hradílek** ([@jhradilek](https://github.com/jhradilek)) | Vale rules for DITA validation - the foundation of all DITA compatibility checks. His work on `asciidoctor-dita-vale` provides the validation backbone for detecting all DITA compatibility issues. |
+| [callouts-conversion](https://github.com/gtrivedi88/callouts-conversion) | **Gaurav Trivedi** | Automated callout fixing tool |
+
+### Author
+
+**Gaurav Trivedi** ([@gtrivedi88](https://github.com/gtrivedi88))
+
+---
 
 ## License
 

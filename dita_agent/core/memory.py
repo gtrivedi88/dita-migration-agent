@@ -323,6 +323,11 @@ class SessionMemoryV2:
             if status == FixStatus.SUCCESS:
                 self.rule_progress[rule]["succeeded"] += 1
                 self.total_fixed += 1
+            elif status == FixStatus.SKIPPED:
+                # SKIPPED means no action needed (e.g., SNIPPET files)
+                # Count as "succeeded" since the issue is resolved (no fix required)
+                self.rule_progress[rule]["succeeded"] += 1
+                self.total_fixed += 1
             elif status == FixStatus.FAILED:
                 self.rule_progress[rule]["failed"] += 1
                 self.total_failed += 1
@@ -344,8 +349,20 @@ class SessionMemoryV2:
         line: int,
         message: str,
         reason: str,
+        already_counted: bool = False,
     ):
-        """Record an item that needs manual review."""
+        """
+        Record an item that needs manual review.
+        
+        Args:
+            filepath: Path to the file.
+            rule: The rule that flagged the issue.
+            line: Line number of the issue.
+            message: Issue message from Vale.
+            reason: Reason for manual review.
+            already_counted: If True, don't increment total_manual_review 
+                           (used when record_fix was already called with MANUAL_REVIEW status).
+        """
         self.manual_review_items.append({
             "filepath": str(filepath),
             "rule": rule,
@@ -354,7 +371,9 @@ class SessionMemoryV2:
             "reason": reason,
             "timestamp": datetime.now().isoformat(),
         })
-        self.total_manual_review += 1
+        # Only increment if not already counted by record_fix
+        if not already_counted:
+            self.total_manual_review += 1
     
     # ------------------------------------------------------------------
     # LEARNING MEMORY - Key Innovation!
