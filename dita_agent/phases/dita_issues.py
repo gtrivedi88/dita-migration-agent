@@ -393,7 +393,36 @@ class DITAIssuesPhase:
             if fix_result.success and fix_result.old_string:
                 # Apply the fix
                 if not self.dry_run:
-                    new_content = content.replace(fix_result.old_string, fix_result.new_string, 1)
+                    # Try exact match first
+                    if fix_result.old_string in content:
+                        new_content = content.replace(fix_result.old_string, fix_result.new_string, 1)
+                    else:
+                        # Fallback: Fuzzy matching (98% similarity)
+                        from dita_agent.core.fuzzy_matcher import apply_fuzzy_replacement
+                        new_content = apply_fuzzy_replacement(
+                            content,
+                            fix_result.old_string,
+                            fix_result.new_string,
+                            threshold=0.98
+                        )
+
+                        if new_content is None:
+                            # Fuzzy matching failed - route to manual review
+                            console.print(f"      → {filepath.name} - Fuzzy match failed (exact match not found)")
+                            stats["failed"] += 1
+                            self.memory.record_fix(
+                                filepath=filepath,
+                                rule=rule,
+                                line=issue.line,
+                                status=FixStatus.FAILED,
+                                method=fix_result.method,
+                                error="old_string not found (exact or fuzzy)",
+                            )
+                            self._add_to_manual_review(filepath, rule, issue.line, issue.message, fix_result.error or "old_string not found")
+                            continue
+                        else:
+                            console.print(f"      [yellow]⚡ {filepath.name} - Applied using fuzzy match (98% similar)[/yellow]")
+
                     write_error = write_file_safe(filepath, new_content)
                     
                     if write_error:

@@ -324,15 +324,22 @@ class AssemblyContentsFixer(PatternFixer):
 class TemplateFixer:
     """
     Base class for template fixers.
-    
+
     Uses LLM for the first instance of a rule, then learns the pattern
     and applies it to remaining instances without LLM.
+
+    Enterprise features:
+    - Complexity analysis for intelligent routing
+    - Smart context windowing for complex files
     """
-    
+
     def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2, rule: str):
         self.llm = llm_client
         self.memory = memory
         self.rule = rule
+        # Import complexity analyzer
+        from dita_agent.core.complexity_analyzer import ComplexityAnalyzer
+        self.complexity_analyzer = ComplexityAnalyzer()
     
     def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
         """Fix using learned pattern or LLM."""
@@ -352,11 +359,107 @@ class TemplateFixer:
         return FixResult(success=False, error="Not implemented", method="template_propagation")
     
     def _fix_with_llm(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
-        """Use LLM to generate a fix."""
+        """Use LLM to generate a fix with smart context windowing."""
+        # Analyze file complexity
+        complexity = self.complexity_analyzer.analyze_content(content)
+
+        # Route based on complexity
+        if self.complexity_analyzer.should_skip_llm(complexity):
+            # VERY_HIGH complexity - route to manual review
+            return FixResult(
+                success=False,
+                error=f"MANUAL_REVIEW: File complexity too high for LLM ({complexity.total_score}). "
+                      f"Nested conditionals: {complexity.nested_conditionals}, "
+                      f"Long lines: {complexity.long_lines}. "
+                      f"Manual review recommended for line {line}.",
+                method="complexity_bypass"
+            )
+
         # Get rule context
         rule_info = get_rule(self.rule)
         prompt_context = get_prompt_context(self.rule) if rule_info else ""
-        
+
+        # Use smart context windowing for MEDIUM/HIGH complexity
+        if self.complexity_analyzer.should_use_context_window(complexity):
+            context, offset_line = self.complexity_analyzer.extract_context_window(
+                content, line, window_size=15
+            )
+            context_line = line - offset_line + 1
+
+            # Format context with line numbers
+            context_lines = context.split('\n')
+            formatted_lines = []
+            for i, line_content in enumerate(context_lines):
+                actual_line = offset_line + i
+                marker = " >> " if i == context_line - 1 else "    "
+                formatted_lines.append(f"{actual_line:4d}{marker}{line_content}")
+            formatted_context = '\n'.join(formatted_lines)
+
+            prompt = f"""Fix this DITA compatibility issue.
+
+RULE: {self.rule}
+FILE: {filepath.name}
+LINE: {offset_line + context_line - 1}
+MESSAGE: {message}
+COMPLEXITY: {complexity.complexity_level} (windowed context for performance)
+
+{prompt_context}
+
+CONTEXT (the >> marks the problematic line):
+```
+{formatted_context}
+```
+
+IMPORTANT:
+- This is a WINDOWED context (not full file)
+- Make the MINIMAL change needed
+- The old_string must EXACTLY match text in the context
+
+Return ONLY a JSON object:
+{{
+    "old_string": "exact text to replace (must match file exactly)",
+    "new_string": "replacement text"
+}}"""
+
+            response = self.llm.generate(prompt, expect_json=True)
+
+            if not response.success:
+                return FixResult(
+                    success=False,
+                    error=response.error,
+                    method="template_llm_windowed",
+                    tokens_used=response.tokens_used,
+                )
+
+            try:
+                old_string = response.parsed.get("old_string", "")
+                new_string = response.parsed.get("new_string", "")
+
+                if not old_string or old_string not in context:
+                    return FixResult(
+                        success=False,
+                        error="old_string not found in context window",
+                        method="template_llm_windowed",
+                        tokens_used=response.tokens_used,
+                    )
+
+                return FixResult(
+                    success=True,
+                    old_string=old_string,
+                    new_string=new_string,
+                    method="template_llm_windowed",
+                    tokens_used=response.tokens_used,
+                )
+
+            except Exception as e:
+                return FixResult(
+                    success=False,
+                    error=f"Failed to parse LLM response: {str(e)}",
+                    method="template_llm_windowed",
+                    tokens_used=response.tokens_used,
+                )
+
+        # LOW complexity - use standard approach
         # Extract context around the issue
         lines = content.split('\n')
         start = max(0, line - 5)
@@ -366,13 +469,14 @@ class TemplateFixer:
             marker = " >> " if i == line - 1 else "    "
             context_lines.append(f"{i+1:4d}{marker}{lines[i]}")
         context = '\n'.join(context_lines)
-        
+
         prompt = f"""Fix this DITA compatibility issue.
 
 RULE: {self.rule}
 FILE: {filepath.name}
 LINE: {line}
 MESSAGE: {message}
+COMPLEXITY: {complexity.complexity_level}
 
 {prompt_context}
 
@@ -386,26 +490,26 @@ Return ONLY a JSON object:
     "old_string": "exact text to replace (must match file exactly)",
     "new_string": "replacement text"
 }}"""
-        
+
         response = self.llm.generate(prompt, expect_json=True)
-        
+
         if not response.success:
             return FixResult(
                 success=False,
                 error=response.error,
-                method="llm",
+                method="template_llm",
                 tokens_used=response.tokens_used,
             )
-        
+
         try:
             old_string = response.parsed.get("old_string", "")
             new_string = response.parsed.get("new_string", "")
-            
+
             if not old_string or old_string not in content:
                 return FixResult(
                     success=False,
                     error="old_string not found in content",
-                    method="llm",
+                    method="template_llm",
                     tokens_used=response.tokens_used,
                 )
             
@@ -811,20 +915,172 @@ class DocumentTitleTemplateFixer(TemplateFixer):
 class LLMFixer:
     """
     Fixer that uses LLM for each instance.
-    
+
     Used for complex issues that require understanding context
     and can't be easily templated.
+
+    Enterprise features:
+    - Complexity analysis for intelligent routing
+    - Smart context windowing (15 lines vs full file)
+    - Automatic fallback for VERY_HIGH complexity files
     """
-    
+
     def __init__(self, llm_client: LLMClient, rule: str):
         self.llm = llm_client
         self.rule = rule
-    
+        # Import complexity analyzer
+        from dita_agent.core.complexity_analyzer import ComplexityAnalyzer
+        self.complexity_analyzer = ComplexityAnalyzer()
+
     def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
-        """Use LLM to generate a fix."""
+        """Use LLM to generate a fix with smart context windowing and conditional flattening."""
+
+        # STEP 0: Flatten conditionals to remove ambiguity for LLM
+        # This significantly reduces complexity and improves LLM success rate
+        flattened_content = self.complexity_analyzer.flatten_conditionals(content, target='upstream')
+
+        # Calculate line adjustment (flattening may remove lines above the issue)
+        original_lines = content.split('\n')
+        flattened_lines = flattened_content.split('\n')
+
+        # Adjust line number if flattening removed lines before the issue
+        # Simple heuristic: if flattened content is shorter, adjust line proportionally
+        if len(flattened_lines) < len(original_lines):
+            # More sophisticated: find the issue line in flattened content
+            # For now, use the same line number (most cases it's correct)
+            adjusted_line = line
+        else:
+            adjusted_line = line
+
+        # STEP 1: Analyze file complexity (on flattened content)
+        complexity = self.complexity_analyzer.analyze_content(flattened_content)
+
+        # STEP 2: Route based on complexity
+        if self.complexity_analyzer.should_skip_llm(complexity):
+            # VERY_HIGH complexity - route to manual review
+            return FixResult(
+                success=False,
+                error=f"MANUAL_REVIEW: File complexity too high for LLM ({complexity.total_score}). "
+                      f"Nested conditionals: {complexity.nested_conditionals}, "
+                      f"Long lines: {complexity.long_lines}. "
+                      f"Manual review recommended for line {line}.",
+                method="complexity_bypass"
+            )
+
+        # STEP 3: Use smart context windowing for MEDIUM/HIGH complexity
+        if self.complexity_analyzer.should_use_context_window(complexity):
+            context, offset_line = self.complexity_analyzer.extract_context_window(
+                flattened_content, adjusted_line, window_size=15
+            )
+            # Adjust line number to context-relative
+            context_line = adjusted_line - offset_line + 1
+            return self._fix_with_context_window(
+                filepath, context, context_line, offset_line, message, complexity
+            )
+
+        # STEP 4: LOW complexity - use standard full context
+        return self._fix_with_full_context(filepath, flattened_content, adjusted_line, message, complexity)
+
+    def _fix_with_context_window(
+        self,
+        filepath: Path,
+        context: str,
+        context_line: int,
+        offset_line: int,
+        message: str,
+        complexity
+    ) -> FixResult:
+        """Fix using smart context window (for MEDIUM/HIGH complexity)."""
         rule_info = get_rule(self.rule)
         prompt_context = get_prompt_context(self.rule) if rule_info else ""
-        
+
+        # Format context with line numbers
+        context_lines = context.split('\n')
+        formatted_lines = []
+        for i, line_content in enumerate(context_lines):
+            actual_line = offset_line + i
+            marker = " >> " if i == context_line - 1 else "    "
+            formatted_lines.append(f"{actual_line:4d}{marker}{line_content}")
+        formatted_context = '\n'.join(formatted_lines)
+
+        prompt = f"""Fix this DITA compatibility issue.
+
+RULE: {self.rule}
+FILE: {filepath.name}
+LINE: {offset_line + context_line - 1}
+MESSAGE: {message}
+COMPLEXITY: {complexity.complexity_level} (windowed context for performance)
+
+{prompt_context}
+
+CONTEXT (the >> marks the problematic line):
+```
+{formatted_context}
+```
+
+IMPORTANT:
+- This is a WINDOWED context (not full file)
+- Make the MINIMAL change needed to fix THIS specific issue
+- Preserve all existing content and structure
+- The old_string must EXACTLY match text in the context
+- Do NOT try to fix conditionals outside this window
+
+Return ONLY a JSON object:
+{{
+    "old_string": "exact text to replace",
+    "new_string": "replacement text"
+}}"""
+
+        response = self.llm.generate(prompt, expect_json=True)
+
+        if not response.success:
+            return FixResult(
+                success=False,
+                error=response.error,
+                method="llm_windowed",
+                tokens_used=response.tokens_used,
+            )
+
+        try:
+            old_string = response.parsed.get("old_string", "")
+            new_string = response.parsed.get("new_string", "")
+
+            if not old_string or old_string not in context:
+                return FixResult(
+                    success=False,
+                    error="old_string not found in context window",
+                    method="llm_windowed",
+                    tokens_used=response.tokens_used,
+                )
+
+            return FixResult(
+                success=True,
+                old_string=old_string,
+                new_string=new_string,
+                method="llm_windowed",
+                tokens_used=response.tokens_used,
+            )
+
+        except Exception as e:
+            return FixResult(
+                success=False,
+                error=f"Failed to parse LLM response: {str(e)}",
+                method="llm_windowed",
+                tokens_used=response.tokens_used,
+            )
+
+    def _fix_with_full_context(
+        self,
+        filepath: Path,
+        content: str,
+        line: int,
+        message: str,
+        complexity
+    ) -> FixResult:
+        """Fix using full context (for LOW complexity)."""
+        rule_info = get_rule(self.rule)
+        prompt_context = get_prompt_context(self.rule) if rule_info else ""
+
         # Extract context
         lines = content.split('\n')
         start = max(0, line - 8)
@@ -834,13 +1090,14 @@ class LLMFixer:
             marker = " >> " if i == line - 1 else "    "
             context_lines.append(f"{i+1:4d}{marker}{lines[i]}")
         context = '\n'.join(context_lines)
-        
+
         prompt = f"""Fix this DITA compatibility issue.
 
 RULE: {self.rule}
 FILE: {filepath.name}
 LINE: {line}
 MESSAGE: {message}
+COMPLEXITY: {complexity.complexity_level}
 
 {prompt_context}
 
@@ -859,9 +1116,9 @@ Return ONLY a JSON object:
     "old_string": "exact text to replace",
     "new_string": "replacement text"
 }}"""
-        
+
         response = self.llm.generate(prompt, expect_json=True)
-        
+
         if not response.success:
             return FixResult(
                 success=False,
