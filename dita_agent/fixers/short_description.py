@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from dita_agent.llm.client import LLMClient
+from dita_agent.core.semantic_validation import SemanticValidator
 
 
 @dataclass
@@ -61,11 +62,12 @@ class ShortDescriptionFixer:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         """
         Initialize the fixer.
-        
+
         Args:
             llm_client: Optional LLM client for complex cases.
         """
         self.llm = llm_client
+        self.validator = SemanticValidator()
     
     def fix(self, content: str, filepath: Path) -> FixResult:
         """
@@ -127,12 +129,26 @@ class ShortDescriptionFixer:
                 method="regex",
                 error="First content line is not a paragraph"
             )
-        
+
+        # SEMANTIC VALIDATION: Check if this paragraph is suitable as short description
+        # Extract the full paragraph (might span multiple lines)
+        paragraph_text = self._extract_paragraph(lines, first_para_start)
+
+        validation = self.validator.validate_short_description(paragraph_text)
+
+        if not validation.is_valid:
+            # Paragraph fails semantic validation - needs manual review
+            return FixResult(
+                success=False,
+                method="regex",
+                error=f"MANUAL_REVIEW: {validation.error}. {validation.suggestion}"
+            )
+
         # Build the fix
         # We need to add [role="_abstract"] on the line BEFORE the paragraph
         old_string = lines[first_para_start]
         new_string = f'[role="_abstract"]\n{old_string}'
-        
+
         return FixResult(
             success=True,
             old_string=old_string,
@@ -294,3 +310,40 @@ If no suitable paragraph exists (the file might need a new paragraph added), res
                 method="llm",
                 error=f"Failed to parse LLM response: {e}"
             )
+
+    def _extract_paragraph(self, lines: list, start_index: int) -> str:
+        """
+        Extract the full paragraph starting at start_index.
+
+        A paragraph continues until we hit:
+        - An empty line
+        - A block delimiter (=, -, *, |, ., [)
+        - Another paragraph
+
+        Args:
+            lines: List of file lines
+            start_index: Starting line index
+
+        Returns:
+            The complete paragraph text
+        """
+        paragraph_lines = []
+
+        for i in range(start_index, len(lines)):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Stop at empty line
+            if not stripped:
+                break
+
+            # Stop at block delimiters
+            if stripped.startswith(('=', '-', '*', '|', '.', '[')):
+                # But include the first line if it's the start
+                if i == start_index:
+                    paragraph_lines.append(stripped)
+                break
+
+            paragraph_lines.append(stripped)
+
+        return ' '.join(paragraph_lines)

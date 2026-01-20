@@ -446,19 +446,22 @@ Return ONLY a JSON object:
 class ShortDescriptionTemplateFixer(TemplateFixer):
     """
     Template fixer for ShortDescription rule.
-    
+
     This fixer adds [role="_abstract"] before the first paragraph AFTER the title.
     It uses deterministic pattern matching - no LLM needed.
     """
-    
+
     import re
     ABSTRACT_PATTERN = re.compile(r'^\[role=["\']?_abstract["\']?\]', re.MULTILINE)
     TITLE_PATTERN = re.compile(r'^=\s+.+$', re.MULTILINE)
     # Pattern to detect SNIPPET content type - these files should NOT have abstracts
     SNIPPET_PATTERN = re.compile(r'^:_mod-docs-content-type:\s*SNIPPET', re.MULTILINE | re.IGNORECASE)
-    
+
     def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
         super().__init__(llm_client, memory, "ShortDescription")
+        # Import semantic validator
+        from dita_agent.core.semantic_validation import SemanticValidator
+        self.validator = SemanticValidator()
     
     def _is_snippet_file(self, content: str) -> bool:
         """Check if file is a SNIPPET type - these don't need abstracts."""
@@ -560,6 +563,19 @@ class ShortDescriptionTemplateFixer(TemplateFixer):
             
             # Found first content paragraph (must be outside conditionals)
             if in_conditional == 0 and len(stripped) > 10:  # Reasonable paragraph length
+                # SEMANTIC VALIDATION: Extract full paragraph and validate
+                paragraph_text = self._extract_paragraph(lines, i)
+                validation = self.validator.validate_short_description(paragraph_text)
+
+                if not validation.is_valid:
+                    # Paragraph fails semantic validation - needs manual review
+                    return FixResult(
+                        success=False,
+                        method="pattern",
+                        error=f"MANUAL_REVIEW: {validation.error}. {validation.suggestion}"
+                    )
+
+                # Validation passed - apply the fix
                 old_string = line_content
                 new_string = f'[role="_abstract"]\n{line_content}'
                 return FixResult(
@@ -626,7 +642,44 @@ class ShortDescriptionTemplateFixer(TemplateFixer):
                 return True
         
         return False
-    
+
+    def _extract_paragraph(self, lines: list, start_index: int) -> str:
+        """
+        Extract the full paragraph starting at start_index.
+
+        A paragraph continues until we hit:
+        - An empty line
+        - A block delimiter (=, -, *, |, ., [)
+        - Another paragraph
+
+        Args:
+            lines: List of file lines
+            start_index: Starting line index
+
+        Returns:
+            The complete paragraph text
+        """
+        paragraph_lines = []
+
+        for i in range(start_index, len(lines)):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Stop at empty line
+            if not stripped:
+                break
+
+            # Stop at block delimiters
+            if stripped.startswith(('=', '-', '*', '|', '.', '[')):
+                # But include the first line if it's the start
+                if i == start_index:
+                    paragraph_lines.append(stripped)
+                break
+
+            paragraph_lines.append(stripped)
+
+        return ' '.join(paragraph_lines)
+
     def _generate_abstract_paragraph(self, filepath: Path, content: str) -> FixResult:
         """
         Use LLM to generate an abstract paragraph when marker exists but no paragraph.
@@ -893,8 +946,8 @@ class FixerRegistry:
         "CalloutList": FixerTier.LLM,
         "AttributeReference": FixerTier.LLM,
         
-        # Special: Manual review only (no auto-fix)
-        "AssemblyContents": FixerTier.PATTERN,  # Uses pattern fixer that flags for manual review
+        # AssemblyContents uses LLM to analyze and decide placement
+        "AssemblyContents": FixerTier.LLM,  # Intelligent content placement analysis
     }
     
     def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
@@ -908,7 +961,7 @@ class FixerRegistry:
             "ThematicBreak": ThematicBreakFixer(),
             "AuthorLine": AuthorLineFixer(),
             "EntityReference": EntityReferenceFixer(),
-            "AssemblyContents": AssemblyContentsFixer(),  # Flags for manual review
+            # AssemblyContents now uses LLM tier for intelligent analysis
         }
         
         # Initialize template fixers (LLM once, then propagate)

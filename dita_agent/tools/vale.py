@@ -116,6 +116,30 @@ class ValeRunner:
     def is_available(self) -> bool:
         """Check if Vale is installed and available."""
         return shutil.which("vale") is not None
+
+    @staticmethod
+    def find_project_config(project_dir: Path) -> Optional[Path]:
+        """
+        Find the project's .vale.ini file.
+
+        Searches upward from project_dir to find .vale.ini
+
+        Args:
+            project_dir: Starting directory to search from.
+
+        Returns:
+            Path to .vale.ini if found, None otherwise.
+        """
+        current = project_dir.resolve()
+
+        # Search upward through parent directories
+        while current != current.parent:
+            vale_ini = current / ".vale.ini"
+            if vale_ini.exists():
+                return vale_ini
+            current = current.parent
+
+        return None
     
     def _create_temp_config(self) -> Path:
         """
@@ -168,11 +192,11 @@ BasedOnStyles = AsciiDocDITA
     ) -> ValeResult:
         """
         Run Vale on the specified files.
-        
+
         Args:
             files: List of files to lint.
             project_dir: Project directory (for finding .vale.ini).
-            
+
         Returns:
             ValeResult with all issues found.
         """
@@ -181,16 +205,25 @@ BasedOnStyles = AsciiDocDITA
                 success=False,
                 error_message="Vale is not installed. Please install Vale first.",
             )
-        
+
         if not files:
             return ValeResult(success=True)
-        
+
+        # Determine which config to use
+        config_to_use = self.config_path
+
+        # If project_dir provided, try to find project's .vale.ini
+        if project_dir:
+            project_config = self.find_project_config(project_dir)
+            if project_config:
+                config_to_use = project_config
+
         # Build command
         cmd = ["vale", "--output", "JSON"]
-        
-        # Always use our config (temp or user-provided)
-        cmd.extend(["--config", str(self.config_path)])
-        
+
+        # Use the selected config
+        cmd.extend(["--config", str(config_to_use)])
+
         # Add files
         cmd.extend([str(f) for f in files])
         

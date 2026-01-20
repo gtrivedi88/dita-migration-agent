@@ -225,7 +225,18 @@ class DITAIssuesPhase:
                 self.memory.save_checkpoint(self.project_dir)
         
         # ====================================================================
-        # STEP 5: Cleanup and finalize
+        # STEP 5: Post-processing validation for EXISTING abstracts
+        # ====================================================================
+        console.print("\n  [dim]Validating existing [role=\"_abstract\"] paragraphs...[/dim]")
+        # Validate ALL files, not just files with Vale issues
+        validation_issues = self._validate_existing_abstracts(set(files))
+
+        if validation_issues > 0:
+            console.print(f"  [yellow]⚠ Found {validation_issues} semantic issues in existing abstracts[/yellow]")
+            result.issues_failed += validation_issues
+
+        # ====================================================================
+        # STEP 6: Cleanup and finalize
         # ====================================================================
         self.vale.cleanup()
         
@@ -712,3 +723,68 @@ class DITAIssuesPhase:
         # Write the file
         doc_path.write_text('\n'.join(lines))
         console.print(f"    [dim]📄 See: .dita-agent/SKIPPED_SUGGESTIONS.md[/dim]")
+
+    def _validate_existing_abstracts(self, files: set) -> int:
+        """
+        Validate EXISTING [role="_abstract"] paragraphs for semantic quality.
+
+        This catches issues that Vale doesn't detect because the marker already exists.
+        For example: paragraphs ending with colons that create broken short descriptions.
+
+        Args:
+            files: Set of file paths to validate.
+
+        Returns:
+            Count of semantic issues found.
+        """
+        from dita_agent.core.semantic_validation import SemanticValidator
+        import re
+
+        validator = SemanticValidator()
+        issues_found = 0
+
+        # Pattern to find [role="_abstract"] and the following paragraph
+        abstract_pattern = re.compile(
+            r'^\[role=["\']?_abstract["\']?\]\s*\n(.+?)(?:\n\n|\n(?=[*.\[])|$)',
+            re.MULTILINE | re.DOTALL
+        )
+
+        for filepath in files:
+            content, error = read_file_safe(filepath)
+            if error or not content:
+                continue
+
+            # Find all abstract paragraphs
+            for match in abstract_pattern.finditer(content):
+                paragraph = match.group(1).strip()
+
+                # Remove line breaks within the paragraph for validation
+                paragraph = ' '.join(paragraph.split('\n'))
+
+                # Validate semantic quality
+                validation = validator.validate_short_description(paragraph)
+
+                if not validation.is_valid:
+                    # Get line number for the abstract marker
+                    line_num = content[:match.start()].count('\n') + 1
+
+                    console.print(
+                        f"      [magenta]📋 {filepath.name}:{line_num} - Existing abstract has semantic issues[/magenta]"
+                    )
+                    console.print(
+                        f"         [dim]{validation.error[:80]}{'...' if len(validation.error) > 80 else ''}[/dim]"
+                    )
+
+                    # Record in manual review
+                    self.memory.record_manual_review(
+                        filepath=filepath,
+                        rule="ShortDescription",
+                        line=line_num,
+                        message="Existing [role=\"_abstract\"] paragraph has semantic quality issues",
+                        reason=f"{validation.error}. {validation.suggestion}",
+                        already_counted=False,
+                    )
+
+                    issues_found += 1
+
+        return issues_found

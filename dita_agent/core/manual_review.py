@@ -256,6 +256,8 @@ class ManualReviewGenerator:
             return self._prompt_assembly_contents(item, rel_path, context)
         elif item.rule == "ShortDescription":
             return self._prompt_short_description(item, rel_path, context)
+        elif item.rule == "RelatedLinks":
+            return self._prompt_related_links(item, rel_path, context)
         elif item.rule == "LineBreak":
             return self._prompt_line_break(item, rel_path, context)
         elif item.rule == "ContentType":
@@ -319,7 +321,107 @@ SNIPPET files are reusable content fragments, not standalone topics.
 The DITA agent correctly skipped this file.
 
 STATUS: ✅ No changes required"""
-        
+
+        # Check for semantic validation failures
+        if "ends with ':'" in item.reason or "colon" in item.reason.lower():
+            return f"""Fix the ShortDescription semantic issue in @{rel_path}
+
+ISSUE: {item.message}
+LINE: {item.line}
+PROBLEM: {item.reason}
+
+CONTEXT (>>> marks the paragraph):
+{context}
+
+🚫 CRITICAL ISSUE: The paragraph ends with a colon (:), making it INCOMPLETE.
+
+In DITA, the [role="_abstract"] paragraph becomes the <shortdesc> element.
+If it ends with a colon, it implies a list follows - but DITA <shortdesc>
+cannot contain lists! This creates a BROKEN short description.
+
+WHAT TO DO:
+
+Step 1: REWRITE the paragraph to be SELF-CONTAINED
+- Read the paragraph AND the bullets/list that follows it
+- Incorporate the key information into a complete sentence
+- Remove the colon and any reference to "the following", "if:", etc.
+
+Step 2: Add [role="_abstract"]
+- Once the paragraph is complete and standalone, add [role="_abstract"] before it
+
+Step 3: Keep the detailed list below (optional)
+- You can keep the bullets/list below for additional details
+
+EXAMPLE:
+
+Before:
+= Archiving performance analysis
+You can skip archiving if:
+* The DSOs are already present
+* Both systems match
+
+After:
+= Archiving performance analysis
+
+[role="_abstract"]
+You can skip archiving if the DSOs are already present on the target
+system or if both systems have matching binaries and kernel versions.
+
+You can skip archiving in the following cases:
+* The DSOs are already present on the target system
+* Both systems match (same binaries, kernel versions)
+
+KEY RULE: The [role="_abstract"] paragraph must make COMPLETE sense
+when read alone, without any following content!
+
+Please rewrite the paragraph and add [role="_abstract"]."""
+
+        # Check for forward references
+        if any(ref in item.reason.lower() for ref in ["the following", "forward reference", "below"]):
+            return f"""Fix the ShortDescription forward reference issue in @{rel_path}
+
+ISSUE: {item.message}
+LINE: {item.line}
+PROBLEM: {item.reason}
+
+CONTEXT (>>> marks the paragraph):
+{context}
+
+🚫 ISSUE: The paragraph references "the following" or similar forward references.
+
+In DITA, the [role="_abstract"] paragraph becomes the <shortdesc> element
+which appears ALONE in search results, topic lists, and metadata.
+If it says "the following steps" but the steps aren't included, it's BROKEN.
+
+WHAT TO DO:
+
+1. REWRITE the paragraph to describe WHAT the content covers, not HOW it's organized
+2. Remove references to "the following", "below", "as shown", etc.
+3. Make it a standalone summary of the topic
+4. Then add [role="_abstract"]
+
+EXAMPLE:
+
+Before:
+= Configuring the system
+This procedure includes the following steps:
+* Install packages
+* Configure settings
+
+After:
+= Configuring the system
+
+[role="_abstract"]
+This procedure installs required packages, configures system settings,
+and validates the configuration.
+
+.Procedure
+* Install packages...
+* Configure settings...
+
+Please rewrite the paragraph and add [role="_abstract"]."""
+
+        # Default ShortDescription prompt
         return f"""Fix the ShortDescription DITA compatibility issue in @{rel_path}
 
 ISSUE: {item.message}
@@ -331,22 +433,81 @@ CONTEXT (>>> marks the area):
 WHAT TO DO:
 1. Open the file @{rel_path}
 2. Find the first paragraph AFTER the document title (= Title)
-3. Add [role="_abstract"] on the line immediately before that paragraph
+3. Ensure it's a SELF-CONTAINED summary (no colons, no "the following", etc.)
+4. Add [role="_abstract"] on the line immediately before that paragraph
 
 EXAMPLE:
 Before:
 = My Document Title
 
-This is the first paragraph that describes the topic.
+This document describes how to configure the feature.
 
 After:
 = My Document Title
 
 [role="_abstract"]
-This is the first paragraph that describes the topic.
+This document describes how to configure the feature.
+
+CRITICAL RULES:
+- The paragraph must NOT end with a colon (:)
+- The paragraph must NOT reference "the following", "below", etc.
+- The paragraph must make complete sense when read ALONE
 
 Please add the [role="_abstract"] attribute."""
-    
+
+    def _prompt_related_links(self, item: ManualReviewItem, rel_path: Path, context: str) -> str:
+        """Generate prompt for RelatedLinks issues (non-link content in Additional resources)."""
+        return f"""Fix the RelatedLinks DITA compatibility issue in @{rel_path}
+
+ISSUE: {item.message}
+LINE: {item.line}
+DETAILS: {item.reason}
+
+CONTEXT (>>> marks the issue):
+{context}
+
+🚨 CRITICAL DITA RULE: Additional resources can ONLY contain LINKS
+
+DITA's <related-links> element can ONLY contain:
+- Bulleted links: * link:https://example.com[Text]
+- Cross-references: * xref:file.adoc[Text]
+- Email links: * mailto:email@example.com[Text]
+
+FORBIDDEN in Additional resources:
+- ❌ Plain text without link: macro
+- ❌ Command references like `perf help`
+- ❌ Man page references like "see man page"
+- ❌ NOTE/TIP/IMPORTANT blocks
+- ❌ Any content that's not a clickable link
+
+WHAT TO DO WITH THIS ITEM:
+
+Option 1: Convert to actual link (if you know the URL)
+  Example: * link:https://perf.wiki.kernel.org/[Perf documentation]
+  Note: Only use this if you KNOW the correct URL!
+
+Option 2: Move to a NOTE/TIP block in the last module
+  Example: Add to end of the last included module:
+  [NOTE]
+  ====
+  For command-specific help, run `perf help _COMMAND_` in your terminal.
+  ====
+
+Option 3: Move to body text if it's procedural help
+  Example: Add as a paragraph in relevant module:
+  "For command-specific help, run `perf help _COMMAND_`."
+
+Option 4: Delete if redundant
+  Example: If there's already a link to the man page, delete the text reference
+
+MAKE YOUR DECISION:
+1. Open @{rel_path}
+2. Find the Additional resources section
+3. For this specific item, choose Option 1, 2, 3, or 4
+4. Apply the change
+
+Please fix this issue by choosing the most appropriate option."""
+
     def _prompt_line_break(self, item: ManualReviewItem, rel_path: Path, context: str) -> str:
         """Generate prompt for LineBreak issues (intentional formatting)."""
         return f"""Review the LineBreak formatting in @{rel_path}
