@@ -933,27 +933,10 @@ class LLMFixer:
         self.complexity_analyzer = ComplexityAnalyzer()
 
     def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
-        """Use LLM to generate a fix with smart context windowing and conditional flattening."""
+        """Use LLM to generate a fix with smart context windowing."""
 
-        # STEP 0: Flatten conditionals to remove ambiguity for LLM
-        # This significantly reduces complexity and improves LLM success rate
-        flattened_content = self.complexity_analyzer.flatten_conditionals(content, target='upstream')
-
-        # Calculate line adjustment (flattening may remove lines above the issue)
-        original_lines = content.split('\n')
-        flattened_lines = flattened_content.split('\n')
-
-        # Adjust line number if flattening removed lines before the issue
-        # Simple heuristic: if flattened content is shorter, adjust line proportionally
-        if len(flattened_lines) < len(original_lines):
-            # More sophisticated: find the issue line in flattened content
-            # For now, use the same line number (most cases it's correct)
-            adjusted_line = line
-        else:
-            adjusted_line = line
-
-        # STEP 1: Analyze file complexity (on flattened content)
-        complexity = self.complexity_analyzer.analyze_content(flattened_content)
+        # STEP 1: Analyze file complexity
+        complexity = self.complexity_analyzer.analyze_content(content)
 
         # STEP 2: Route based on complexity
         if self.complexity_analyzer.should_skip_llm(complexity):
@@ -970,16 +953,16 @@ class LLMFixer:
         # STEP 3: Use smart context windowing for MEDIUM/HIGH complexity
         if self.complexity_analyzer.should_use_context_window(complexity):
             context, offset_line = self.complexity_analyzer.extract_context_window(
-                flattened_content, adjusted_line, window_size=15
+                content, line, window_size=15
             )
             # Adjust line number to context-relative
-            context_line = adjusted_line - offset_line + 1
+            context_line = line - offset_line + 1
             return self._fix_with_context_window(
                 filepath, context, context_line, offset_line, message, complexity
             )
 
         # STEP 4: LOW complexity - use standard full context
-        return self._fix_with_full_context(filepath, flattened_content, adjusted_line, message, complexity)
+        return self._fix_with_full_context(filepath, content, line, message, complexity)
 
     def _fix_with_context_window(
         self,

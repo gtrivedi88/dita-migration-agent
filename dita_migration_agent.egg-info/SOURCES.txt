@@ -6,10 +6,13 @@ dita_agent/agent.py
 dita_agent/cli.py
 dita_agent/certs/2022-IT-Root-CA.pem
 dita_agent/core/__init__.py
+dita_agent/core/complexity_analyzer.py
+dita_agent/core/fuzzy_matcher.py
 dita_agent/core/manual_review.py
 dita_agent/core/memory.py
 dita_agent/core/memory_legacy.py
 dita_agent/core/scope.py
+dita_agent/core/semantic_validation.py
 dita_agent/core/verification.py
 dita_agent/fixers/__init__.py
 dita_agent/fixers/registry.py
