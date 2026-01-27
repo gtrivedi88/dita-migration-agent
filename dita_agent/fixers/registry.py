@@ -896,9 +896,66 @@ Your paragraph:"""
 
 class BlockTitleTemplateFixer(TemplateFixer):
     """Template fixer for BlockTitle rule."""
-    
+
     def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
         super().__init__(llm_client, memory, "BlockTitle")
+
+
+class RelatedLinksTemplateFixer(TemplateFixer):
+    """Custom fixer for RelatedLinks that validates before calling LLM."""
+
+    def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
+        super().__init__(llm_client, memory, "RelatedLinks")
+
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        """Check if there are actual links before calling LLM."""
+
+        # Extract the Additional resources section
+        lines = content.split('\n')
+
+        # Find the section (line is approximate, search for the section)
+        section_start = -1
+        for i, l in enumerate(lines):
+            if 'Additional resources' in l:
+                section_start = i
+                break
+
+        if section_start == -1:
+            return FixResult(
+                success=False,
+                error="MANUAL_REVIEW: Could not find Additional resources section",
+                method="pattern"
+            )
+
+        # Check next 20 lines for links
+        has_links = False
+        non_link_items = []
+
+        for i in range(section_start + 1, min(section_start + 20, len(lines))):
+            line_content = lines[i].strip()
+
+            # Stop at next section
+            if line_content.startswith('==') or line_content.startswith('include::'):
+                break
+
+            # Check list items
+            if line_content.startswith('*'):
+                if 'link:' in line_content or 'xref:' in line_content:
+                    has_links = True
+                else:
+                    non_link_items.append(line_content)
+
+        # If NO links at all, route to manual review immediately
+        if not has_links:
+            return FixResult(
+                success=False,
+                error=f"MANUAL_REVIEW: Additional resources section contains no links. "
+                      f"All {len(non_link_items)} items need author review to either add links or move content elsewhere.",
+                method="pattern"
+            )
+
+        # Has some links - let LLM try to fix
+        return super().fix(filepath, content, line, message)
 
 
 class DocumentTitleTemplateFixer(TemplateFixer):
@@ -1209,6 +1266,7 @@ class FixerRegistry:
             "ShortDescription": ShortDescriptionTemplateFixer(llm_client, memory),
             "BlockTitle": BlockTitleTemplateFixer(llm_client, memory),
             "DocumentTitle": DocumentTitleTemplateFixer(llm_client, memory),
+            "RelatedLinks": RelatedLinksTemplateFixer(llm_client, memory),
         }
         
         # Specialized fixer for table line breaks

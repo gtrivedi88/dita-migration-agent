@@ -154,7 +154,7 @@ class ManualReviewGenerator:
     def _generate_markdown(self) -> str:
         """Generate markdown content with AI-ready prompts."""
         lines = []
-        
+
         # Header with clear instructions
         lines.append("# 🤖 AI-Ready Manual Review Prompts")
         lines.append("")
@@ -163,38 +163,50 @@ class ManualReviewGenerator:
         lines.append("")
         lines.append("---")
         lines.append("")
-        
+
         # Summary
         lines.append("## Summary")
         lines.append("")
         lines.append(f"- **Session:** `{self.session_id}`")
         lines.append(f"- **Generated:** {self.report.generated_at.strftime('%Y-%m-%d %H:%M:%S')}")
-        lines.append(f"- **Total Issues:** {len(self.report.items)}")
-        lines.append("")
-        
+
         if not self.report.items:
             lines.append("✅ **No issues require manual review!**")
             return "\n".join(lines)
-        
+
+        # Calculate deduplicated count
+        by_file = self.report.get_by_file()
+        deduplicated_count = 0
+        for filepath, items in by_file.items():
+            deduplicated_count += len(self._deduplicate_items(items))
+
+        lines.append(f"- **Total Issues:** {deduplicated_count}")
+        if deduplicated_count < len(self.report.items):
+            lines.append(f"  - _(Deduplicated from {len(self.report.items)} raw issues)_")
+        lines.append("")
+
         # Quick copy section
         lines.append("## 📋 Quick Copy Prompts")
         lines.append("")
         lines.append("Each prompt below is ready to copy/paste into your AI assistant:")
         lines.append("")
-        
-        by_file = self.report.get_by_file()
+
         prompt_num = 1
-        
+
         for filepath, items in sorted(by_file.items(), key=lambda x: str(x[0])):
             try:
                 rel_path = filepath.relative_to(self.project_dir)
             except ValueError:
                 rel_path = filepath
-            
-            for item in sorted(items, key=lambda x: x.line):
+
+            # Deduplicate items: Group items by rule and proximity (within 5 lines)
+            # This prevents duplicate prompts for the same section
+            deduplicated_items = self._deduplicate_items(items)
+
+            for item in deduplicated_items:
                 # Generate the AI-ready prompt
                 prompt = self._generate_prompt(item, rel_path)
-                
+
                 lines.append(f"### Prompt {prompt_num}: {item.rule} in `{rel_path.name}`")
                 lines.append("")
                 lines.append("<details>")
@@ -208,7 +220,7 @@ class ManualReviewGenerator:
                 lines.append("")
                 lines.append("---")
                 lines.append("")
-                
+
                 prompt_num += 1
         
         # Issues by rule summary
@@ -216,15 +228,18 @@ class ManualReviewGenerator:
         lines.append("")
         lines.append("| # | Rule | File | Line | Status |")
         lines.append("|---|------|------|------|--------|")
-        
+
         prompt_num = 1
         for filepath, items in sorted(by_file.items(), key=lambda x: str(x[0])):
             try:
                 rel_path = filepath.relative_to(self.project_dir)
             except ValueError:
                 rel_path = filepath
-            
-            for item in sorted(items, key=lambda x: x.line):
+
+            # Use deduplicated items for summary table too
+            deduplicated_items = self._deduplicate_items(items)
+
+            for item in deduplicated_items:
                 lines.append(f"| {prompt_num} | {item.rule} | `{rel_path.name}` | {item.line} | 📋 Prompt ready |")
                 prompt_num += 1
         
@@ -239,7 +254,51 @@ class ManualReviewGenerator:
         lines.append("")
         
         return "\n".join(lines)
-    
+
+    def _deduplicate_items(self, items: List[ManualReviewItem]) -> List[ManualReviewItem]:
+        """
+        Deduplicate manual review items from the same file.
+
+        Groups items by rule and proximity (within 5 lines) to prevent
+        duplicate prompts for the same section.
+
+        Args:
+            items: List of manual review items for a single file
+
+        Returns:
+            Deduplicated list with one item per logical section
+        """
+        if not items:
+            return []
+
+        # Sort by rule, then by line
+        sorted_items = sorted(items, key=lambda x: (x.rule, x.line))
+
+        deduplicated = []
+        current_group: Optional[ManualReviewItem] = None
+
+        for item in sorted_items:
+            if current_group is None:
+                # First item in group
+                current_group = item
+            elif (item.rule == current_group.rule and
+                  abs(item.line - current_group.line) <= 5):
+                # Same rule, within 5 lines → part of same section
+                # Keep the FIRST occurrence (usually the heading)
+                # Update reason to be more comprehensive if needed
+                if len(item.reason) > len(current_group.reason):
+                    current_group.reason = item.reason
+            else:
+                # Different rule or far apart → new group
+                deduplicated.append(current_group)
+                current_group = item
+
+        # Don't forget the last group
+        if current_group is not None:
+            deduplicated.append(current_group)
+
+        return deduplicated
+
     def _generate_prompt(self, item: ManualReviewItem, rel_path: Path) -> str:
         """
         Generate an AI-ready prompt for a specific issue.

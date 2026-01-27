@@ -49,7 +49,17 @@ Step 2: For items WITH link: or xref: macros
 - These are already DITA-compatible
 
 Step 3: For items WITHOUT link: or xref: macros
-❌ ACTION: Flag for MANUAL REVIEW - DO NOT attempt to fix!
+❌ ACTION: Return ERROR immediately - DO NOT modify the file!
+
+CRITICAL: DO NOT:
+- Comment out the lines
+- Delete the lines
+- Try to convert without a URL
+- Make ANY changes to the file
+
+INSTEAD: Return a FixResult with:
+- success=False
+- error="MANUAL_REVIEW: Non-link items in Additional resources..."
 
 WHY? Because the LLM cannot:
 - Search the internet for URLs
@@ -57,14 +67,7 @@ WHY? Because the LLM cannot:
 - Guess correct link destinations
 - Know if a URL exists for this content
 
-MANUAL REVIEW GUIDANCE to provide:
-"This item in Additional resources is not a link and cannot be automatically converted:
-- Item: [show the text]
-- Options for the author:
-  1. Convert to a link (if you know the URL)
-  2. Move to a NOTE or IMPORTANT block in the last module
-  3. Delete if redundant
-  4. Convert to body text if it's procedural help"
+The author must decide what to do with these items.
 
 Step 4: If NO link: or xref: macros exist in Additional Resources
 ❌ ACTION: Flag ENTIRE section for manual review
