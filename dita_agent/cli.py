@@ -256,8 +256,10 @@ def sync_vale_styles():
     temp_config = TOOLS_DIR / ".vale-temp.ini"
     config_content = f"""StylesPath = {styles_dir}
 
-[*.adoc]
 Packages = RedHat, AsciiDoc
+
+[*.adoc]
+BasedOnStyles = RedHat, AsciiDoc, AsciiDocDITA
 """
 
     temp_config.write_text(config_content)
