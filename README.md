@@ -12,11 +12,18 @@
 **Step 2: Install and Run**
 
 ```bash
-# Install
+# First install
 pip install https://github.com/gtrivedi88/dita-migration-agent/archive/main.zip
 
-# Installing after an update
-pip install --no-cache-dir --force-reinstall https://github.com/gtrivedi88/dita-migration-agent/archive/main.zip
+# Completely clean install:
+pip uninstall -y dita-migration-agent
+rm -rf ~/.local/lib/python3.*/site-packages/dita_agent
+rm -rf ~/.local/lib/python3.*/site-packages/dita_migration_agent*
+pip install --no-cache-dir https://github.com/gtrivedi88/dita-migration-agent/archive/main.zip
+
+# Verify the fix is installed:
+python -c "from dita_agent.fixers.registry import RelatedLinksTemplateFixer; print('Fix present!')"
+
 
 # Setup
 dita-agent setup # Fill in the API URL, Select Model 1, and enter API key
