@@ -265,7 +265,7 @@ Packages = RedHat, AsciiDoc
     try:
         # Run vale sync to download packages
         result = subprocess.run(
-            ["vale", "sync"],
+            ["vale", "--config", str(temp_config), "sync"],
             cwd=str(TOOLS_DIR),
             capture_output=True,
             text=True,
