@@ -15,6 +15,14 @@
 # Install
 pip install https://github.com/gtrivedi88/dita-migration-agent/archive/main.zip
 
+# Installing after an update
+pip install --no-cache-dir --force-reinstall https://github.com/gtrivedi88/dita-migration-agent/archive/main.zip
+
+# Setup
+dita-agent setup # Fill in the API URL, Select Model 1, and enter API key
+# API URL: https://gemini--apicast-production.apps.int.stc.ai.prod.us-east-1.aws.paas.redhat.com/v1beta/openai
+
+
 # Run - choose one of these commands (inside your AsciiDoc project)
 
 # Full migration in one go

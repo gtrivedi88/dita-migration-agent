@@ -539,7 +539,11 @@ FORBIDDEN in Additional resources:
 - ❌ NOTE/TIP/IMPORTANT blocks
 - ❌ Any content that's not a clickable link
 
-WHAT TO DO WITH THIS ITEM:
+⚠️ IMPORTANT: DO NOT DELETE THE "Additional resources" SECTION!
+Only modify or move the ITEMS within the section that are not valid links.
+Keep the section header and any valid links intact.
+
+WHAT TO DO WITH NON-LINK ITEMS:
 
 Option 1: Convert to actual link (if you know the URL)
   Example: * link:https://perf.wiki.kernel.org/[Perf documentation]
@@ -556,16 +560,19 @@ Option 3: Move to body text if it's procedural help
   Example: Add as a paragraph in relevant module:
   "For command-specific help, run `perf help _COMMAND_`."
 
-Option 4: Delete if redundant
+Option 4: Delete the non-link item if redundant
   Example: If there's already a link to the man page, delete the text reference
 
 MAKE YOUR DECISION:
 1. Open @{rel_path}
 2. Find the Additional resources section
-3. For this specific item, choose Option 1, 2, 3, or 4
-4. Apply the change
+3. KEEP the section header: [role="_additional-resources"] and == Additional resources
+4. For each non-link item, choose Option 1, 2, 3, or 4
+5. Apply the changes to the ITEMS ONLY, not the section itself
 
-Please fix this issue by choosing the most appropriate option."""
+RESULT: The Additional resources section should remain, but contain only valid links.
+
+Please fix this issue by choosing the most appropriate option for each non-link item."""
 
     def _prompt_line_break(self, item: ManualReviewItem, rel_path: Path, context: str) -> str:
         """Generate prompt for LineBreak issues (intentional formatting)."""
