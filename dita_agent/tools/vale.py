@@ -164,7 +164,7 @@ StylesPath = {self.styles_path}
 MinAlertLevel = suggestion
 
 [*.adoc]
-BasedOnStyles = AsciiDocDITA
+BasedOnStyles = AsciiDocDITA, RedHat
 '''
         
         # Write config
@@ -349,7 +349,7 @@ StylesPath = {self.styles_path}
 MinAlertLevel = suggestion
 
 [*.adoc]
-BasedOnStyles = AsciiDocDITA
+BasedOnStyles = AsciiDocDITA, RedHat
 '''
         
         vale_ini.write_text(config_content)
