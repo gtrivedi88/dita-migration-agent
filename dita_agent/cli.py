@@ -226,18 +226,79 @@ def check_vale_installed() -> bool:
 def install_vale():
     """Install Vale linter."""
     print_info("Checking Vale installation...")
-    
+
     if check_vale_installed():
         print_success("Vale is already installed")
         return
-    
+
     print_warning("Vale not found. Please install Vale manually:")
     console.print("\n  [bold]macOS:[/bold]    brew install vale")
     console.print("  [bold]Linux:[/bold]    Download from https://vale.sh/docs/vale-cli/installation/")
     console.print("  [bold]Windows:[/bold]  choco install vale\n")
-    
+
     if not click.confirm("Continue without Vale? (You'll need to install it before running)", default=False):
         raise click.Abort()
+
+
+def sync_vale_styles():
+    """Download and sync Vale style packages (RedHat, AsciiDoc) and copy AsciiDocDITA."""
+    if not check_vale_installed():
+        print_warning("Skipping Vale styles sync (Vale not installed)")
+        return
+
+    print_info("Syncing Vale style packages...")
+
+    # Create unified styles directory
+    styles_dir = TOOLS_DIR / "vale-styles"
+    styles_dir.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: Download RedHat and AsciiDoc packages using Vale
+    temp_config = TOOLS_DIR / ".vale-temp.ini"
+    config_content = f"""StylesPath = {styles_dir}
+
+[*.adoc]
+Packages = RedHat, AsciiDoc
+"""
+
+    temp_config.write_text(config_content)
+
+    try:
+        # Run vale sync to download packages
+        result = subprocess.run(
+            ["vale", "sync"],
+            cwd=str(TOOLS_DIR),
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode == 0:
+            print_success("Downloaded RedHat and AsciiDoc styles")
+        else:
+            print_warning(f"Could not sync Vale styles: {result.stderr}")
+    except Exception as e:
+        print_warning(f"Could not sync Vale styles: {e}")
+    finally:
+        # Clean up temp config
+        if temp_config.exists():
+            temp_config.unlink()
+
+    # Step 2: Copy AsciiDocDITA styles from asciidoctor-dita-vale repo
+    asciidoc_dita_source = TOOLS_DIR / "asciidoctor-dita-vale" / "styles" / "AsciiDocDITA"
+    asciidoc_dita_dest = styles_dir / "AsciiDocDITA"
+
+    if asciidoc_dita_source.exists():
+        try:
+            # Remove existing if present
+            if asciidoc_dita_dest.exists():
+                shutil.rmtree(asciidoc_dita_dest)
+
+            # Copy the directory
+            shutil.copytree(asciidoc_dita_source, asciidoc_dita_dest)
+            print_success("Copied AsciiDocDITA styles")
+        except Exception as e:
+            print_warning(f"Could not copy AsciiDocDITA styles: {e}")
+    else:
+        print_warning("AsciiDocDITA styles not found in asciidoctor-dita-vale repo")
 
 
 def configure_api() -> dict:
@@ -324,7 +385,8 @@ def setup():
     # Step 4: Check Vale
     console.print("\n[bold]Step 4/4: Vale Linter[/bold]")
     install_vale()
-    
+    sync_vale_styles()
+
     # Step 5: Configure API
     console.print("\n[bold]Step 5/5: API Configuration[/bold]")
     config = configure_api()

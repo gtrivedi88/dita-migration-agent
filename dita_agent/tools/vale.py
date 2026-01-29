@@ -95,15 +95,15 @@ class ValeRunner:
     ):
         """
         Initialize Vale runner.
-        
+
         Args:
             styles_path: Path to Vale styles directory.
-                        Defaults to ~/.dita-agent/tools/asciidoctor-dita-vale/styles
+                        Defaults to ~/.dita-agent/tools/vale-styles (includes AsciiDocDITA, RedHat, AsciiDoc)
             config_path: Path to .vale.ini file.
-                        If None, creates a temporary config with AsciiDocDITA styles.
+                        If None, creates a temporary config with all DITA and RedHat styles.
         """
         self.styles_path = styles_path or (
-            Path.home() / ".dita-agent" / "tools" / "asciidoctor-dita-vale" / "styles"
+            Path.home() / ".dita-agent" / "tools" / "vale-styles"
         )
         self._temp_config_path: Optional[Path] = None
         
