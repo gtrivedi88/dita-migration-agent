@@ -369,9 +369,12 @@ def setup():
     - Creates configuration file at ~/.dita-agent/config.json
     """
     print_header("DITA Migration Agent - Setup")
-    
+
     console.print(f"Version: [bold]{__version__}[/bold]\n")
-    
+
+    # Ensure base directory exists before creating subdirectories
+    TOOL_DIR.mkdir(parents=True, exist_ok=True)
+
     # Step 1: Create isolated virtual environment
     console.print("[bold]Step 1/4: Create Isolated Environment[/bold]")
     create_virtual_environment()
