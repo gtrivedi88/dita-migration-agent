@@ -99,6 +99,7 @@ class DITAIssuesPhase:
         memory: SessionMemoryV2,
         project_dir: Path,
         dry_run: bool = False,
+        vale_path: Optional[str] = None,
     ):
         """
         Initialize the phase.
@@ -108,14 +109,15 @@ class DITAIssuesPhase:
             memory: Enhanced session memory with learning.
             project_dir: Project root directory.
             dry_run: If True, don't modify files.
+            vale_path: Path to Vale executable (from isolated venv).
         """
         self.llm = llm_client
         self.memory = memory
         self.project_dir = project_dir
         self.dry_run = dry_run
         
-        # Initialize Vale runner
-        self.vale = ValeRunner()
+        # Initialize Vale runner with venv Vale for consistent behavior
+        self.vale = ValeRunner(vale_path=vale_path)
         
         # Initialize fixer registry with tier system
         self.registry = FixerRegistry(llm_client, memory)

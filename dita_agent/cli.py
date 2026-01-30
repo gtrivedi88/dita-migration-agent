@@ -118,6 +118,17 @@ def get_venv_pip() -> Path:
     return VENV_DIR / "bin" / "pip"
 
 
+def get_venv_vale() -> Path:
+    """Get the path to Vale in the virtual environment."""
+    if sys.platform == "win32":
+        return VENV_DIR / "Scripts" / "vale.exe"
+    return VENV_DIR / "bin" / "vale"
+
+
+# Pinned Vale version for consistent behavior across all machines
+VALE_VERSION = "3.9.5.0"
+
+
 def create_virtual_environment():
     """
     Create an isolated virtual environment for tool dependencies.
@@ -219,30 +230,56 @@ def clone_repositories():
 
 
 def check_vale_installed() -> bool:
-    """Check if Vale is installed."""
-    return shutil.which("vale") is not None
+    """Check if Vale is installed in the isolated venv."""
+    return get_venv_vale().exists()
 
 
 def install_vale():
-    """Install Vale linter."""
-    print_info("Checking Vale installation...")
-
-    if check_vale_installed():
-        print_success("Vale is already installed")
-        return
-
-    print_warning("Vale not found. Please install Vale manually:")
-    console.print("\n  [bold]macOS:[/bold]    brew install vale")
-    console.print("  [bold]Linux:[/bold]    Download from https://vale.sh/docs/vale-cli/installation/")
-    console.print("  [bold]Windows:[/bold]  choco install vale\n")
-
-    if not click.confirm("Continue without Vale? (You'll need to install it before running)", default=False):
+    """
+    Install Vale linter into the isolated virtual environment.
+    
+    This ensures all users have the same Vale version, avoiding compatibility
+    issues with Vale style packages that require specific regex syntax.
+    """
+    print_info("Installing Vale into isolated environment...")
+    
+    vale_path = get_venv_vale()
+    pip_path = get_venv_pip()
+    
+    if vale_path.exists():
+        # Check if it's the correct version
+        try:
+            result = subprocess.run(
+                [str(vale_path), "--version"],
+                capture_output=True,
+                text=True,
+            )
+            if VALE_VERSION.replace(".0", "") in result.stdout:
+                print_success(f"Vale {VALE_VERSION} is already installed")
+                return
+            else:
+                print_info(f"Upgrading Vale to {VALE_VERSION}...")
+        except Exception:
+            pass
+    
+    try:
+        # Install Vale via pip into the isolated venv
+        subprocess.run(
+            [str(pip_path), "install", f"vale=={VALE_VERSION}"],
+            capture_output=True,
+            check=True,
+        )
+        print_success(f"Installed Vale {VALE_VERSION} in isolated environment")
+    except subprocess.CalledProcessError as e:
+        print_error(f"Failed to install Vale: {e.stderr.decode() if e.stderr else e}")
         raise click.Abort()
 
 
 def sync_vale_styles():
     """Download and sync Vale style packages (RedHat, AsciiDoc) and copy AsciiDocDITA."""
-    if not check_vale_installed():
+    vale_path = get_venv_vale()
+    
+    if not vale_path.exists():
         print_warning("Skipping Vale styles sync (Vale not installed)")
         return
 
@@ -252,7 +289,7 @@ def sync_vale_styles():
     styles_dir = TOOLS_DIR / "vale-styles"
     styles_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Download RedHat and AsciiDoc packages using Vale
+    # Step 1: Download RedHat and AsciiDoc packages using Vale from venv
     temp_config = TOOLS_DIR / ".vale-temp.ini"
     config_content = f"""StylesPath = {styles_dir}
 
@@ -265,9 +302,9 @@ BasedOnStyles = RedHat, AsciiDoc, AsciiDocDITA
     temp_config.write_text(config_content)
 
     try:
-        # Run vale sync to download packages
+        # Run vale sync using the venv Vale (consistent version)
         result = subprocess.run(
-            ["vale", "--config", str(temp_config), "sync"],
+            [str(vale_path), "--config", str(temp_config), "sync"],
             cwd=str(TOOLS_DIR),
             capture_output=True,
             text=True,
@@ -451,8 +488,11 @@ def validate_setup() -> dict:
         raise click.Abort()
     
     if not check_vale_installed():
-        print_error("Vale is not installed. Please install Vale and try again.")
+        print_error("Vale is not installed in the isolated environment. Please run: dita-agent setup")
         raise click.Abort()
+    
+    # Store vale path in config for ValeRunner to use
+    config["vale_path"] = str(get_venv_vale())
     
     return config
 
@@ -590,8 +630,16 @@ def status():
     # Tools
     console.print("\n[bold]Tools:[/bold]")
     
-    vale_status = "[green]✓ Installed[/green]" if check_vale_installed() else "[red]✗ Not installed[/red]"
-    console.print(f"  Vale: {vale_status}")
+    vale_path = get_venv_vale()
+    if vale_path.exists():
+        try:
+            result = subprocess.run([str(vale_path), "--version"], capture_output=True, text=True)
+            version = result.stdout.strip() if result.returncode == 0 else "unknown"
+            console.print(f"  Vale: [green]✓ {version}[/green] (isolated)")
+        except Exception:
+            console.print(f"  Vale: [green]✓ Installed[/green] (isolated)")
+    else:
+        console.print(f"  Vale: [red]✗ Not installed[/red]")
     
     for name in REPOS.keys():
         repo_path = TOOLS_DIR / name

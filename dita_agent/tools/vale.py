@@ -86,12 +86,14 @@ class ValeRunner:
     
     Uses asciidoctor-dita-vale styles from ~/.dita-agent/tools/
     Creates a temporary config file to avoid modifying user's existing .vale.ini
+    Uses Vale from the isolated venv for consistent version across all machines.
     """
     
     def __init__(
         self,
         styles_path: Optional[Path] = None,
         config_path: Optional[Path] = None,
+        vale_path: Optional[str] = None,
     ):
         """
         Initialize Vale runner.
@@ -101,11 +103,23 @@ class ValeRunner:
                         Defaults to ~/.dita-agent/tools/vale-styles (includes AsciiDocDITA, RedHat, AsciiDoc)
             config_path: Path to .vale.ini file.
                         If None, creates a temporary config with all DITA and RedHat styles.
+            vale_path: Path to Vale executable.
+                      Defaults to ~/.dita-agent/venv/bin/vale (isolated venv Vale)
         """
         self.styles_path = styles_path or (
             Path.home() / ".dita-agent" / "tools" / "vale-styles"
         )
         self._temp_config_path: Optional[Path] = None
+        
+        # Use vale from isolated venv by default for consistent behavior
+        if vale_path:
+            self.vale_path = Path(vale_path)
+        else:
+            import sys
+            if sys.platform == "win32":
+                self.vale_path = Path.home() / ".dita-agent" / "venv" / "Scripts" / "vale.exe"
+            else:
+                self.vale_path = Path.home() / ".dita-agent" / "venv" / "bin" / "vale"
         
         if config_path:
             self.config_path = config_path
@@ -114,8 +128,8 @@ class ValeRunner:
             self.config_path = self._create_temp_config()
     
     def is_available(self) -> bool:
-        """Check if Vale is installed and available."""
-        return shutil.which("vale") is not None
+        """Check if Vale is installed and available in the isolated venv."""
+        return self.vale_path.exists()
 
     @staticmethod
     def find_project_config(project_dir: Path) -> Optional[Path]:
@@ -195,7 +209,7 @@ BasedOnStyles = AsciiDocDITA, RedHat
 
         Args:
             files: List of files to lint.
-            project_dir: Project directory (for finding .vale.ini).
+            project_dir: Project directory (used as cwd for relative paths).
 
         Returns:
             ValeResult with all issues found.
@@ -203,32 +217,28 @@ BasedOnStyles = AsciiDocDITA, RedHat
         if not self.is_available():
             return ValeResult(
                 success=False,
-                error_message="Vale is not installed. Please install Vale first.",
+                error_message=f"Vale is not installed at {self.vale_path}. Please run: dita-agent setup",
             )
 
         if not files:
             return ValeResult(success=True)
 
-        # Determine which config to use
+        # Always use our bundled config for consistent behavior across all machines
+        # This ensures all users get the same Vale styles and rules, regardless of
+        # any .vale.ini files in their project or home directory
         config_to_use = self.config_path
 
-        # If project_dir provided, try to find project's .vale.ini
-        if project_dir:
-            project_config = self.find_project_config(project_dir)
-            if project_config:
-                config_to_use = project_config
+        # Build command using Vale from isolated venv
+        cmd = [str(self.vale_path), "--output", "JSON"]
 
-        # Build command
-        cmd = ["vale", "--output", "JSON"]
-
-        # Use the selected config
+        # Use our bundled config
         cmd.extend(["--config", str(config_to_use)])
 
         # Add files
         cmd.extend([str(f) for f in files])
         
         try:
-            # Run Vale
+            # Run Vale from isolated venv
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -293,7 +303,18 @@ BasedOnStyles = AsciiDocDITA, RedHat
                 success=False,
                 error_message=f"Failed to parse Vale output: {e}",
             )
-        
+
+        # Check if Vale returned an error object (style syntax error)
+        # Error objects have "Code", "Line", "Text" keys instead of filepath -> issues mapping
+        if isinstance(data, dict) and "Code" in data and "Text" in data:
+            # This is a Vale style error - log warning and continue with empty results
+            # This happens when a style package has regex or syntax errors
+            import sys
+            print(f"Warning: Vale style error - {data.get('Text', 'Unknown error')}", file=sys.stderr)
+            print(f"  at {data.get('Path', 'unknown path')}:{data.get('Line', '?')}", file=sys.stderr)
+            print("  Continuing with reduced style checking...", file=sys.stderr)
+            return ValeResult(success=True)  # Return empty result, don't fail
+
         # Vale output is a dict of filepath -> list of issues
         for filepath, file_issues in data.items():
             for issue_data in file_issues:

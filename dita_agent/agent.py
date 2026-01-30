@@ -254,6 +254,7 @@ class DITAAgent:
             memory=memory_v2,
             project_dir=self.project_dir,
             dry_run=self.dry_run,
+            vale_path=self.config.get("vale_path"),
         )
         
         phase3_result = phase3.run(files)
