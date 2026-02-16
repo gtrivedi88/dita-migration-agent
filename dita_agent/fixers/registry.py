@@ -303,6 +303,154 @@ class MismatchedIdFixer(PatternFixer):
         )
 
 
+# =============================================================================
+# RedHat Style Fixers (generic, message-based)
+# =============================================================================
+
+
+class RedHatSubstitutionFixer(PatternFixer):
+    """Generic fixer for RedHat substitution rules.
+
+    Parses Vale's message format: "Use 'replacement' rather than 'original'."
+    Applies the replacement on the reported line only.
+
+    Handles: CaseSensitiveTerms, ConsciousLanguage, Hyphens, and any other
+    RedHat substitution rule that uses the standard message format.
+    """
+
+    _MSG_PATTERNS = [
+        re.compile(r"Use '([^']+)' rather than '([^']+)'"),
+        re.compile(r"Use ([^']+?) rather than '([^']+)'"),
+        re.compile(r"consider using '([^']+)' rather than '([^']+)'"),
+    ]
+
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        replacement, original = self._parse_substitution(message)
+        if not replacement or not original:
+            return FixResult(
+                success=False,
+                error="Could not parse substitution from vale message",
+                method="pattern",
+            )
+
+        lines = content.split('\n')
+        if not (0 < line <= len(lines)):
+            return FixResult(success=False, error="Line out of range", method="pattern")
+
+        old_line = lines[line - 1]
+        new_line = old_line.replace(original, replacement, 1)
+        if old_line == new_line:
+            return FixResult(
+                success=False,
+                error=f"Term '{original}' not found on line {line}",
+                method="pattern",
+            )
+
+        return FixResult(
+            success=True, old_string=old_line, new_string=new_line, method="pattern"
+        )
+
+    def _parse_substitution(self, message: str):
+        """Extract (replacement, original) from a vale substitution message."""
+        for pattern in self._MSG_PATTERNS:
+            m = pattern.search(message)
+            if m:
+                return m.group(1).strip("'"), m.group(2).strip("'")
+        return None, None
+
+
+class RedHatRepeatedWordFixer(PatternFixer):
+    """Fix repeated words flagged by RedHat.RepeatedWords.
+
+    Message format: "'the' is repeated."
+    """
+
+    _MSG_RE = re.compile(r"'([^']+)' is repeated")
+
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        m = self._MSG_RE.search(message)
+        if not m:
+            return FixResult(
+                success=False, error="Could not parse repeated word", method="pattern"
+            )
+
+        word = m.group(1)
+        lines = content.split('\n')
+        if not (0 < line <= len(lines)):
+            return FixResult(success=False, error="Line out of range", method="pattern")
+
+        old_line = lines[line - 1]
+        dup_re = re.compile(
+            r'\b(' + re.escape(word) + r')\s+\1\b', re.IGNORECASE
+        )
+        new_line = dup_re.sub(r'\1', old_line, count=1)
+        if old_line == new_line:
+            return FixResult(
+                success=False, error="Could not remove duplicate", method="pattern"
+            )
+
+        return FixResult(
+            success=True, old_string=old_line, new_string=new_line, method="pattern"
+        )
+
+
+class HeadingPunctuationFixer(PatternFixer):
+    """Fix trailing punctuation in headings (RedHat.HeadingPunctuation).
+
+    Message: "Do not use end punctuation in headings."
+    """
+
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        lines = content.split('\n')
+        if not (0 < line <= len(lines)):
+            return FixResult(success=False, error="Line out of range", method="pattern")
+
+        old_line = lines[line - 1]
+        new_line = re.sub(r'[.?!]+\s*$', '', old_line)
+        if old_line == new_line:
+            return FixResult(
+                success=False, error="No trailing punctuation found", method="pattern"
+            )
+
+        return FixResult(
+            success=True, old_string=old_line, new_string=new_line, method="pattern"
+        )
+
+
+class AbbreviationPeriodFixer(PatternFixer):
+    """Fix periods in uppercase abbreviations (RedHat.Abbreviations).
+
+    Message: "Do not use periods in all-uppercase abbreviations such as 'A.B.C.'."
+    """
+
+    _MSG_RE = re.compile(r"such as '([^']+)'")
+
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        m = self._MSG_RE.search(message)
+        if not m:
+            return FixResult(
+                success=False, error="Could not parse abbreviation", method="pattern"
+            )
+
+        abbrev_with_periods = m.group(1)
+        abbrev_clean = abbrev_with_periods.replace('.', '')
+
+        lines = content.split('\n')
+        if not (0 < line <= len(lines)):
+            return FixResult(success=False, error="Line out of range", method="pattern")
+
+        old_line = lines[line - 1]
+        new_line = old_line.replace(abbrev_with_periods, abbrev_clean, 1)
+        if old_line == new_line:
+            return FixResult(
+                success=False, error="Abbreviation not found on line", method="pattern"
+            )
+
+        return FixResult(
+            success=True, old_string=old_line, new_string=new_line, method="pattern"
+        )
+
+
 class AssemblyContentsFixer(PatternFixer):
     """
     AssemblyContents - Flags for manual review (NO auto-fix).
@@ -1383,6 +1531,20 @@ class FixerRegistry:
         
         # AssemblyContents uses LLM to analyze and decide placement
         "AssemblyContents": FixerTier.LLM,  # Intelligent content placement analysis
+
+        # RedHat style rules — PATTERN-fixable (message-based)
+        "CaseSensitiveTerms": FixerTier.PATTERN,
+        "ConsciousLanguage": FixerTier.PATTERN,
+        "Hyphens": FixerTier.PATTERN,
+        "RepeatedWords": FixerTier.PATTERN,
+        "HeadingPunctuation": FixerTier.PATTERN,
+        "Abbreviations": FixerTier.PATTERN,
+
+        # RedHat style rules — LLM-routed (context-dependent)
+        "EmDash": FixerTier.LLM,
+        "DoNotUseTerms": FixerTier.LLM,
+        "GitLinks": FixerTier.LLM,
+        "MergeConflictMarkers": FixerTier.LLM,
     }
     
     def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
@@ -1390,6 +1552,7 @@ class FixerRegistry:
         self.memory = memory
         
         # Initialize pattern fixers (no LLM needed)
+        _redhat_sub = RedHatSubstitutionFixer()
         self.pattern_fixers: Dict[str, PatternFixer] = {
             "LineBreak": LineBreakFixer(),
             "PageBreak": PageBreakFixer(),
@@ -1397,7 +1560,13 @@ class FixerRegistry:
             "AuthorLine": AuthorLineFixer(),
             "EntityReference": EntityReferenceFixer(),
             "MismatchedId": MismatchedIdFixer(),
-            # AssemblyContents now uses LLM tier for intelligent analysis
+            # RedHat style pattern fixers (message-based)
+            "CaseSensitiveTerms": _redhat_sub,
+            "ConsciousLanguage": _redhat_sub,
+            "Hyphens": _redhat_sub,
+            "RepeatedWords": RedHatRepeatedWordFixer(),
+            "HeadingPunctuation": HeadingPunctuationFixer(),
+            "Abbreviations": AbbreviationPeriodFixer(),
         }
         
         # Initialize template fixers (LLM once, then propagate)
