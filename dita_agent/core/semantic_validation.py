@@ -84,12 +84,16 @@ class SemanticValidator:
                 suggestion="Condense to be more concise while retaining key information"
             )
 
-        # Check 5: Unresolved attributes
-        if re.search(r'\{[^}]+\}', text):
+        # Check 5: Unresolved attributes — only flag malformed references,
+        # NOT normal AsciiDoc product attributes like {ProductName}.
+        # AsciiDoc attributes are expected in Red Hat docs and resolve at build time.
+        # Only flag references that look broken: empty braces, unclosed braces, or
+        # braces containing spaces (likely formatting errors).
+        if re.search(r'\{[ \t]*\}|\{[^}]*\n', text):
             return ValidationResult(
                 is_valid=False,
-                error="Short description contains unresolved attribute references",
-                suggestion="Ensure attributes are defined before short description or replace with actual text"
+                error="Short description contains malformed attribute references (empty or unclosed braces)",
+                suggestion="Fix the malformed attribute reference syntax"
             )
 
         # Check 6: Ends with incomplete sentence indicators

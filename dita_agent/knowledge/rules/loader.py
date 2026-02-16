@@ -25,6 +25,7 @@ from .equation_formula import EQUATION_FORMULA
 from .example_block import EXAMPLE_BLOCK
 from .include_directive import INCLUDE_DIRECTIVE
 from .line_break import LINE_BREAK
+from .mismatched_id import MISMATCHED_ID
 from .nested_section import NESTED_SECTION
 from .page_break import PAGE_BREAK
 from .related_links import RELATED_LINKS
@@ -59,6 +60,7 @@ ALL_RULES: Dict[str, Rule] = {
     "ExampleBlock": EXAMPLE_BLOCK,
     "IncludeDirective": INCLUDE_DIRECTIVE,
     "LineBreak": LINE_BREAK,
+    "MismatchedId": MISMATCHED_ID,
     "NestedSection": NESTED_SECTION,
     "PageBreak": PAGE_BREAK,
     "RelatedLinks": RELATED_LINKS,

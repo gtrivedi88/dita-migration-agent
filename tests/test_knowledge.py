@@ -142,9 +142,9 @@ class TestValeRules:
         for rule in critical_rules:
             assert rule in ALL_RULES, f"Missing critical rule: {rule}"
     
-    def test_all_30_rules_loaded(self):
-        """Test that all 30 rules from asciidoctor-dita-vale are loaded."""
-        assert len(ALL_RULES) == 30, f"Expected 30 rules, got {len(ALL_RULES)}"
+    def test_all_rules_loaded(self):
+        """Test that all rules from asciidoctor-dita-vale are loaded."""
+        assert len(ALL_RULES) == 31, f"Expected 31 rules, got {len(ALL_RULES)}"
     
     def test_rules_have_required_fields(self):
         """Test that each rule has required fields."""
@@ -202,7 +202,7 @@ class TestValeRules:
         """Test getting all error rules."""
         error_rules = get_error_rules()
         
-        assert len(error_rules) == 5  # 5 errors per asciidoctor-dita-vale
+        assert len(error_rules) == 6  # 6 errors per asciidoctor-dita-vale (including MismatchedId)
         
         # Verify all are errors
         for name, rule in error_rules.items():

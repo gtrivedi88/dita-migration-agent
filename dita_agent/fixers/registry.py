@@ -9,6 +9,7 @@ Tiers:
 The registry routes issues to the appropriate fixer based on rule type.
 """
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -36,6 +37,41 @@ class FixResult:
     error: Optional[str] = None
     method: str = "unknown"  # "pattern", "template", "llm", "template_propagation"
     tokens_used: int = 0
+
+
+def validate_fix_scope(
+    content: str,
+    old_string: str,
+    issue_line: int,
+    tolerance: int = 10,
+) -> bool:
+    """
+    Validate that an LLM-proposed fix is scoped to the reported issue location.
+
+    Prevents unsolicited edits where the LLM modifies content far from the
+    reported issue line (e.g., backtick-quoting a proper noun on line 33
+    when the issue was on line 25).
+
+    Args:
+        content: Full file content.
+        old_string: The text the LLM wants to replace.
+        issue_line: The line number (1-based) where vale reported the issue.
+        tolerance: How many lines away from the issue line the fix can be.
+
+    Returns:
+        True if the fix overlaps with or is near the issue line.
+    """
+    # Find where old_string starts in the content
+    idx = content.find(old_string)
+    if idx == -1:
+        return False
+
+    # Calculate the line range of old_string
+    fix_start_line = content[:idx].count('\n') + 1
+    fix_end_line = fix_start_line + old_string.count('\n')
+
+    # Check if the fix overlaps with or is near the issue line
+    return (fix_start_line - tolerance) <= issue_line <= (fix_end_line + tolerance)
 
 
 class BaseFixer(Protocol):
@@ -240,10 +276,37 @@ class EntityReferenceFixer(PatternFixer):
         return FixResult(success=False, error="Entity not found", method="pattern")
 
 
+class MismatchedIdFixer(PatternFixer):
+    """Fix mismatched quotes in [id=...] attributes."""
+
+    # Matches [id= with mismatched/missing quotes and captures the ID value
+    _ID_RE = re.compile(r'^\[id=["\']?([^"\'\]]+)["\']?\]')
+
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        lines = content.split('\n')
+        if line < 1 or line > len(lines):
+            return FixResult(success=False, error="Line out of range", method="pattern")
+
+        target = lines[line - 1]
+        m = self._ID_RE.match(target.strip())
+        if not m:
+            return FixResult(success=False, error="Could not parse ID attribute", method="pattern")
+
+        id_value = m.group(1).strip()
+        new_line = target.replace(target.strip(), f'[id="{id_value}"]')
+
+        return FixResult(
+            success=True,
+            old_string=target,
+            new_string=new_line,
+            method="pattern",
+        )
+
+
 class AssemblyContentsFixer(PatternFixer):
     """
     AssemblyContents - Flags for manual review (NO auto-fix).
-    
+
     This rule detects plain text content between include directives in assemblies.
     Auto-fixing is NOT appropriate because:
     1. The content isn't wrong - it's just in the wrong place
@@ -253,18 +316,39 @@ class AssemblyContentsFixer(PatternFixer):
     This fixer analyzes the structure and provides actionable guidance.
     """
     
+    # Patterns for case-variant "Additional resources" headings that vale rejects.
+    # Vale only accepts exact: .Additional resources or == Additional resources
+    _CASE_VARIANT_RE = re.compile(
+        r'^(\.{1,2}|={2,}\s+)additional\s+resources[ \t]*$',
+        re.IGNORECASE | re.MULTILINE,
+    )
+
     def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
-        """Analyze and flag for manual review with specific guidance."""
-        import re
-        
+        """Analyze and fix case variants, or flag for manual review."""
+
+        # First: try to fix case variants of "Additional resources" headings.
+        # Vale only matches exact case: "Additional resources" (lowercase 'r').
+        # Common wrong variants: ".Additional Resources", "== additional resources"
+        for m in self._CASE_VARIANT_RE.finditer(content):
+            original = m.group(0)
+            prefix = m.group(1)
+            correct = f"{prefix}Additional resources"
+            if original != correct:
+                return FixResult(
+                    success=True,
+                    old_string=original,
+                    new_string=correct,
+                    method="pattern",
+                )
+
         lines = content.split('\n')
-        
+
         # Find all include directives
         include_lines = []
         for i, line_content in enumerate(lines):
             if line_content.strip().startswith('include::'):
                 include_lines.append(i + 1)  # 1-based
-        
+
         if len(include_lines) < 2:
             return FixResult(
                 success=False,
@@ -509,6 +593,14 @@ Return ONLY a JSON object:
                 return FixResult(
                     success=False,
                     error="old_string not found in content",
+                    method="template_llm",
+                    tokens_used=response.tokens_used,
+                )
+
+            if not validate_fix_scope(content, old_string, line):
+                return FixResult(
+                    success=False,
+                    error=f"LLM fix targets lines far from issue line {line} — rejected as out of scope",
                     method="template_llm",
                     tokens_used=response.tokens_used,
                 )
@@ -907,10 +999,15 @@ class RelatedLinksTemplateFixer(TemplateFixer):
     def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
         super().__init__(llm_client, memory, "RelatedLinks")
 
+    # Regex for AsciiDoc link macros: link:https://... or xref:id[...]
+    _LINK_RE = re.compile(r'(?:link:https?://|xref:)')
+
     @staticmethod
     def _is_valid_link(line_text: str) -> bool:
         """Check if a list item contains a valid link: or xref: macro."""
-        return line_text.startswith('*') and ('link:' in line_text or 'xref:' in line_text)
+        return line_text.startswith('*') and bool(
+            RelatedLinksTemplateFixer._LINK_RE.search(line_text)
+        )
 
     @staticmethod
     def _classify_section_items(lines: list[str], section_start: int) -> tuple[bool, list[str]]:
@@ -931,7 +1028,7 @@ class RelatedLinksTemplateFixer(TemplateFixer):
             if not line_content.startswith('*'):
                 continue
 
-            if 'link:' in line_content or 'xref:' in line_content:
+            if RelatedLinksTemplateFixer._LINK_RE.search(line_content):
                 has_links = True
             else:
                 non_link_items.append(line_content)
@@ -971,10 +1068,7 @@ class RelatedLinksTemplateFixer(TemplateFixer):
         if not non_link_items:
             return FixResult(
                 success=True,
-                content=content,
                 method="pattern",
-                message="All items in Additional resources are valid links (link: or xref:). "
-                        "No changes needed — likely a Vale false positive due to AsciiDoc attributes in link URLs or text."
             )
 
         # Check if the specific flagged line is itself a valid link.
@@ -983,10 +1077,7 @@ class RelatedLinksTemplateFixer(TemplateFixer):
         if 0 < line <= len(lines) and self._is_valid_link(lines[line - 1].strip()):
             return FixResult(
                 success=True,
-                content=content,
                 method="pattern",
-                message=f"Flagged line {line} is a valid link (contains link: or xref: macro). "
-                        "No changes needed — likely a Vale false positive due to AsciiDoc attributes."
             )
 
         # Has some links but also non-link items — let LLM try to fix
@@ -1205,11 +1296,22 @@ Return ONLY a JSON object:
         try:
             old_string = response.parsed.get("old_string", "")
             new_string = response.parsed.get("new_string", "")
-            
+
             if not old_string or old_string not in content:
                 return FixResult(
                     success=False,
                     error="old_string not found in content",
+                    method="llm",
+                    tokens_used=response.tokens_used,
+                )
+
+            # Reject fixes that modify content far from the reported issue line.
+            # This prevents unsolicited LLM edits (e.g., backtick-quoting a word
+            # on line 33 when the issue was on line 25).
+            if not validate_fix_scope(content, old_string, line):
+                return FixResult(
+                    success=False,
+                    error=f"LLM fix targets lines far from issue line {line} — rejected as out of scope",
                     method="llm",
                     tokens_used=response.tokens_used,
                 )
@@ -1252,6 +1354,7 @@ class FixerRegistry:
         "EntityReference": FixerTier.PATTERN,
         "TagDirective": FixerTier.PATTERN,
         "IncludeDirective": FixerTier.PATTERN,
+        "MismatchedId": FixerTier.PATTERN,
         "ConditionalCode": FixerTier.PATTERN,
         "TableFooter": FixerTier.PATTERN,
         "DiscreteHeading": FixerTier.PATTERN,
@@ -1293,6 +1396,7 @@ class FixerRegistry:
             "ThematicBreak": ThematicBreakFixer(),
             "AuthorLine": AuthorLineFixer(),
             "EntityReference": EntityReferenceFixer(),
+            "MismatchedId": MismatchedIdFixer(),
             # AssemblyContents now uses LLM tier for intelligent analysis
         }
         

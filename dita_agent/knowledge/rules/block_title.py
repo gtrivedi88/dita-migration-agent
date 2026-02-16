@@ -15,59 +15,51 @@ BLOCK_TITLE = Rule(
 
 CRITICAL: NEVER suggest [discrete] headings!
 [discrete] headings are NOT DITA-compatible and will trigger DiscreteHeading warnings.
-DO NOT suggest adding [discrete] as a fix - it creates a new violation.
 
-VALE'S BLOCKTITLE RULE CONTEXT:
-Vale's BlockTitle.yml has special logic for PROCEDURE modules:
-- In procedures, these titles are ALLOWED: .Prerequisites, .Procedure, .Verification, .Results, .Troubleshooting, .Next steps
-- If you see a BlockTitle warning, it means:
-  1. The file is NOT a procedure module, OR
-  2. The title doesn't match exactly, OR
-  3. It's genuinely unsupported
+VALE RULE BEHAVIOR (BlockTitle.yml):
+The rule is CONTENT-TYPE AWARE. Different block titles are allowed depending
+on the file's :_mod-docs-content-type: value.
 
-TO FIX:
+PROCEDURE files — these block titles are ALLOWED (vale skips them):
+  .Prerequisites, .Prerequisite
+  .Procedure
+  .Verification
+  .Result, .Results
+  .Troubleshooting, .Troubleshooting step, .Troubleshooting steps
+  .Next steps, .Next step
 
-Option 1 (Preferred for simple titles): Convert to bold emphasis
-  Before: .Important note
-  After:  *Important note:*
+ALL content types — this block title is ALLOWED:
+  .Additional resources
 
-  Use when the title is just labeling content, not creating structure.
+CONCEPT / REFERENCE / ASSEMBLY files — ALL block titles are FORBIDDEN
+except .Additional resources. Even .Prerequisites, .Procedure, etc.
+trigger a warning in non-PROCEDURE files.
 
-Option 2 (For assembly sections): Convert to proper level-1 heading
-  Before: .Prerequisites
-  After:  == Prerequisites
+HOW TO FIX (depends on content type):
 
-  IMPORTANT: Do this WITHOUT [discrete]!
-  Use only in ASSEMBLIES when you need a true section.
-  The heading becomes a real section in the document structure.
+For CONCEPT / REFERENCE files:
+  - .Prerequisites / .Procedure / .Next steps etc. should NOT appear.
+    If they do, the file may actually be a PROCEDURE (wrong content type).
+    Check if the file has numbered steps — if so, it should be PROCEDURE.
+  - Other block titles (.Some title): convert to bold text (*Some title:*)
+    or remove if unnecessary.
 
-Option 3 (Remove if unnecessary):
-  Before: .My title
-          Some text
-  After:  Some text
+For ASSEMBLY files:
+  - .Next step / .Next steps: merge links into .Additional resources section.
+    "Next step" is NOT recognized as valid after include directives.
+  - Other block titles: convert to bold text or remove.
 
-  Use when the title adds no value.
+For PROCEDURE files:
+  - If you get a BlockTitle warning in a PROCEDURE, the title name does
+    NOT match the allowed list exactly. Check spelling and case:
+    ".Prerequisite" (singular) is allowed, ".Pre-requisites" is NOT.
+  - For custom titles (.Important note): convert to bold (*Important note:*).
 
-WRONG APPROACHES (DO NOT DO THESE):
-
-❌ WRONG: [discrete]
-          == Prerequisites
-
-   Why wrong: [discrete] triggers DiscreteHeading warning!
-   This creates a new DITA violation while trying to fix BlockTitle.
-
-❌ WRONG: Convert .Prerequisites to == Prerequisites in a PROCEDURE module
-
-   Why wrong: .Prerequisites is ALLOWED in procedures by Vale's rule.
-   The warning only appears if it's NOT a procedure.
-
-VERIFICATION:
-After fixing, the heading should be:
-- Either bold text (*Title:*), OR
-- A section heading (== Title) WITHOUT [discrete], OR
-- Removed entirely
-
-Never produce output with [discrete] in it.""",
+WRONG APPROACHES:
+- DO NOT add [discrete] — triggers DiscreteHeading warning.
+- DO NOT convert .Prerequisites to == Prerequisites in a PROCEDURE —
+  that triggers TaskSection error (== headings forbidden in procedures).
+- DO NOT use .Next step in assemblies — only .Additional resources is valid.""",
     examples=[
         RuleExample(
             description="Remove title from paragraph",

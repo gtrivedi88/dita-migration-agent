@@ -323,6 +323,8 @@ class ManualReviewGenerator:
             return self._prompt_content_type(item, rel_path, context)
         elif item.rule == "Callouts":
             return self._prompt_callouts(item, rel_path, context)
+        elif item.rule == "ContentQuality":
+            return self._prompt_content_quality(item, rel_path, context)
         else:
             return self._prompt_generic(item, rel_path, context)
     
@@ -345,6 +347,65 @@ class ManualReviewGenerator:
     
     def _prompt_assembly_contents(self, item: ManualReviewItem, rel_path: Path, context: str) -> str:
         """Generate prompt for AssemblyContents issues."""
+        # Detect the type of issue from context to give targeted guidance
+        issue_type = self._classify_assembly_contents_issue(context)
+
+        if issue_type == "misnamed_heading":
+            return f"""Fix the AssemblyContents DITA compatibility issue in @{rel_path}
+
+ISSUE: {item.message}
+LINE: {item.line}
+
+CONTEXT (>>> marks the issue):
+{context}
+
+ROOT CAUSE: The assembly has a heading after include directives that is NOT
+"Additional resources". The vale rule ONLY recognizes "Additional resources"
+(exact text, case-sensitive) as valid content after includes.
+
+INVALID headings: .Next step, .Next steps, .Additional Resources (capital R),
+== Next step, or any other heading name.
+
+WHAT TO DO:
+1. Open @{rel_path}
+2. Find ALL sections after the last include:: directive
+3. Merge their link items into a SINGLE "Additional resources" section
+4. Use this exact format:
+
+[role="_additional-resources"]
+.Additional resources
+
+* link:URL1[Text1]
+* link:URL2[Text2]
+
+RULES:
+- The heading must be EXACTLY ".Additional resources" or "== Additional resources"
+- Case matters: lowercase 'r' in "resources"
+- Only ONE such section is allowed
+- It can ONLY contain bulleted link/xref items
+
+Please merge and rename the sections."""
+
+        if issue_type == "wrong_case":
+            return f"""Fix the AssemblyContents DITA compatibility issue in @{rel_path}
+
+ISSUE: {item.message}
+LINE: {item.line}
+
+CONTEXT (>>> marks the issue):
+{context}
+
+ROOT CAUSE: The "Additional Resources" heading has wrong capitalization.
+The vale rule requires EXACTLY "Additional resources" (lowercase 'r').
+
+WHAT TO DO:
+1. Open @{rel_path}
+2. Change ".Additional Resources" to ".Additional resources"
+   OR change "== Additional Resources" to "== Additional resources"
+
+Please fix the capitalization."""
+
+        # Default: prose content between/after includes
         return f"""Fix the AssemblyContents DITA compatibility issue in @{rel_path}
 
 ISSUE: {item.message}
@@ -354,20 +415,47 @@ DETAILS: {item.reason}
 CONTEXT (>>> marks the issue):
 {context}
 
-WHAT TO DO:
-1. Open the file @{rel_path}
-2. Find the plain text content between include:: directives (shown above)
-3. This content needs to be moved to a separate module file
-4. Create a new module file (e.g., modules/con-{rel_path.stem}-overview.adoc)
-5. Move the paragraph content to the new module
-6. Replace the removed content with: include::modules/con-{rel_path.stem}-overview.adoc[leveloffset=+1]
+ROOT CAUSE: Content other than "Additional resources" appears after include
+directives. In DITA-compatible assemblies, the ONLY allowed content after
+include directives is a single "Additional resources" section with links.
+
+WHAT TO DO — choose based on what the flagged content is:
+
+Option A: If the content is prose/paragraphs between includes:
+  - DELETE if it's transitional text ("The following sections describe...")
+  - MOVE to a new module if it's substantial content:
+    1. Create a new file (e.g., topics/con_{rel_path.stem}-intro.adoc)
+    2. Add :_mod-docs-content-type: CONCEPT and [role="_abstract"]
+    3. Replace the prose with: include::topics/con_{rel_path.stem}-intro.adoc[leveloffset=+1]
+
+Option B: If the content is a NOTE/WARNING/IMPORTANT block:
+  - Move it into the last included topic module
+
+Option C: If the content is a misnamed section (e.g., .Next step):
+  - Merge its links into a single .Additional resources section
 
 IMPORTANT:
-- Do NOT delete the content - move it to a new file
 - Keep all ifdef/endif conditional blocks in place
-- The new module should have proper DITA attributes (:_mod-docs-content-type: CONCEPT)
+- Keep all include:: directives unchanged
 
 Please make these changes."""
+
+    def _classify_assembly_contents_issue(self, context: str) -> str:
+        """Classify the type of AssemblyContents issue from context lines."""
+        if not context:
+            return "prose"
+        context_lower = context.lower()
+        # Check for misnamed headings like .Next step, == Next step, etc.
+        import re
+        if re.search(r'>>>\s*(?:={2,}\s+|\.{1,2})(?:next\s+steps?)', context_lower):
+            return "misnamed_heading"
+        # Check for wrong case: .Additional Resources (capital R)
+        if re.search(r'>>>\s*(?:={2,}\s+|\.{1,2})additional\s+Resources', context):
+            return "wrong_case"
+        # Check for any non-"Additional resources" heading
+        if re.search(r'>>>\s*(?:={2,}\s+|\.{1,2})(?!additional\s+resources\s*$)[a-z]', context_lower):
+            return "misnamed_heading"
+        return "prose"
     
     def _prompt_short_description(self, item: ManualReviewItem, rel_path: Path, context: str) -> str:
         """Generate prompt for ShortDescription issues."""
@@ -650,6 +738,34 @@ The callout numbers in code blocks should use:
 
 Please review and fix the callout formatting."""
     
+    def _prompt_content_quality(self, item: ManualReviewItem, rel_path: Path, context: str) -> str:
+        """Generate prompt for content quality issues (NOT vale findings)."""
+        return f"""CONTENT QUALITY SUGGESTION for @{rel_path}
+
+NOTE: This is NOT a Vale linting finding. This is a content quality check
+performed by the DITA agent. The file already has [role="_abstract"] and
+passes Vale validation. This suggestion is about improving the abstract
+text for DITA short description quality.
+
+ISSUE: {item.reason}
+LINE: {item.line}
+
+CONTEXT (>>> marks the issue):
+{context}
+
+WHAT TO DO:
+1. Open the file @{rel_path}
+2. Go to line {item.line}
+3. Review the [role="_abstract"] paragraph
+4. If the abstract text could be improved, rewrite it to be:
+   - A complete sentence (not ending with a colon)
+   - Self-contained (no forward references like "the following")
+   - 10-75 words long
+   - Action-oriented (tell the user what they can do)
+5. If the abstract is acceptable as-is, you may skip this suggestion
+
+This is an OPTIONAL improvement, not a required fix."""
+
     def _prompt_generic(self, item: ManualReviewItem, rel_path: Path, context: str) -> str:
         """Generate generic prompt for other issues."""
         return f"""Fix the {item.rule} DITA compatibility issue in @{rel_path}

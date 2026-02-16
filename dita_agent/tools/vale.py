@@ -94,6 +94,7 @@ class ValeRunner:
         styles_path: Optional[Path] = None,
         config_path: Optional[Path] = None,
         vale_path: Optional[str] = None,
+        project_dir: Optional[Path] = None,
     ):
         """
         Initialize Vale runner.
@@ -105,12 +106,15 @@ class ValeRunner:
                         If None, creates a temporary config with all DITA and RedHat styles.
             vale_path: Path to Vale executable.
                       Defaults to ~/.dita-agent/venv/bin/vale (isolated venv Vale)
+            project_dir: Project directory. Used to find and merge the project's
+                        .vale.ini exclusions (e.g., snippets/, common/) into the
+                        agent's temporary config.
         """
         self.styles_path = styles_path or (
             Path.home() / ".dita-agent" / "tools" / "vale-styles"
         )
         self._temp_config_path: Optional[Path] = None
-        
+
         # Use vale from isolated venv by default for consistent behavior
         if vale_path:
             self.vale_path = Path(vale_path)
@@ -120,12 +124,13 @@ class ValeRunner:
                 self.vale_path = Path.home() / ".dita-agent" / "venv" / "Scripts" / "vale.exe"
             else:
                 self.vale_path = Path.home() / ".dita-agent" / "venv" / "bin" / "vale"
-        
+
         if config_path:
             self.config_path = config_path
         else:
-            # Create temporary config with correct DITA styles
-            self.config_path = self._create_temp_config()
+            # Create temporary config with correct DITA styles,
+            # merging exclusions from the project's .vale.ini if present
+            self.config_path = self._create_temp_config(project_dir)
     
     def is_available(self) -> bool:
         """Check if Vale is installed and available in the isolated venv."""
@@ -155,22 +160,91 @@ class ValeRunner:
 
         return None
     
-    def _create_temp_config(self) -> Path:
+    @staticmethod
+    def _parse_project_exclusions(project_dir: Optional[Path]) -> List[str]:
+        """
+        Parse a project's .vale.ini to extract file-pattern exclusion sections.
+
+        Looks for sections like ``[**/snippets/*.adoc]`` where
+        ``BasedOnStyles`` is set to empty (meaning "skip these files").
+
+        Args:
+            project_dir: Project root to search for .vale.ini.
+
+        Returns:
+            List of INI section strings to append to the agent's config,
+            e.g. ``["[**/snippets/*.adoc]\\nBasedOnStyles = \\n"]``.
+        """
+        if not project_dir:
+            return []
+
+        project_config = ValeRunner.find_project_config(project_dir)
+        if not project_config:
+            return []
+
+        try:
+            lines = project_config.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            return []
+
+        return ValeRunner._extract_empty_style_sections(lines)
+
+    @staticmethod
+    def _is_empty_basedonstyles(line: str) -> bool:
+        """Check if a line is a BasedOnStyles directive with an empty value."""
+        stripped = line.strip()
+        if not stripped.lower().startswith("basedonstyles"):
+            return False
+        parts = stripped.split("=", 1)
+        return len(parts) == 2 and not parts[1].strip()
+
+    @staticmethod
+    def _extract_empty_style_sections(lines: List[str]) -> List[str]:
+        """Extract INI sections where BasedOnStyles is set to empty."""
+        exclusions: List[str] = []
+        current_section: Optional[str] = None
+        section_has_empty_styles = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            if stripped.startswith("[") and stripped.endswith("]"):
+                if current_section and section_has_empty_styles:
+                    exclusions.append(f"{current_section}\nBasedOnStyles =\n")
+                current_section = stripped
+                section_has_empty_styles = False
+                continue
+
+            if current_section and ValeRunner._is_empty_basedonstyles(stripped):
+                section_has_empty_styles = True
+
+        if current_section and section_has_empty_styles:
+            exclusions.append(f"{current_section}\nBasedOnStyles =\n")
+
+        return exclusions
+
+    def _create_temp_config(self, project_dir: Optional[Path] = None) -> Path:
         """
         Create a temporary .vale.ini config file for DITA checking.
-        
+
         This approach:
         - Never modifies user's existing .vale.ini
         - Ensures correct AsciiDocDITA styles are used
+        - Merges file-pattern exclusions from the project's .vale.ini
+          (e.g., snippets/ and common/ directories that should be skipped)
         - Cleans up automatically (temp file)
-        
+
+        Args:
+            project_dir: Optional project directory to search for .vale.ini
+                        exclusions to merge.
+
         Returns:
             Path to the temporary config file.
         """
         # Create temp file that persists until explicitly deleted or program ends
         fd, temp_path = tempfile.mkstemp(suffix='.ini', prefix='vale-dita-agent-')
         self._temp_config_path = Path(temp_path)
-        
+
         config_content = f'''# Temporary Vale config for DITA Agent
 # This file is auto-generated and will be cleaned up after the run
 
@@ -180,11 +254,18 @@ MinAlertLevel = suggestion
 [*.adoc]
 BasedOnStyles = AsciiDocDITA, RedHat
 '''
-        
+
+        # Merge exclusion sections from the project's .vale.ini
+        exclusions = self._parse_project_exclusions(project_dir)
+        if exclusions:
+            config_content += "\n# Exclusions merged from project .vale.ini\n"
+            for exclusion in exclusions:
+                config_content += f"\n{exclusion}\n"
+
         # Write config
         with open(fd, 'w') as f:
             f.write(config_content)
-        
+
         return self._temp_config_path
     
     def cleanup(self) -> None:

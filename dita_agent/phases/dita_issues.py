@@ -16,6 +16,7 @@ Processing Flow:
 6. Learn from LLM fixes and propagate patterns
 """
 
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +27,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 
 from dita_agent.core.memory import SessionMemoryV2, FixStatus
 from dita_agent.fixers.registry import FixerRegistry, FixResult
+from dita_agent.knowledge.rules.loader import should_skip_rule
 from dita_agent.llm.client import LLMClient
 from dita_agent.tools.vale import ValeRunner, ValeIssue
 from dita_agent.utils.file_ops import (
@@ -36,6 +38,19 @@ from dita_agent.utils.file_ops import (
 )
 
 console = Console()
+
+# Regex to extract content type from AsciiDoc files.
+# Matches :_mod-docs-content-type:, :_content-type:, :_module-type: variants.
+_CONTENT_TYPE_RE = re.compile(
+    r'^:_(?:mod-docs-content|content|module)-type:\s+(\w+)',
+    re.MULTILINE,
+)
+
+
+def _extract_content_type(content: str) -> Optional[str]:
+    """Extract the content type (PROCEDURE, CONCEPT, etc.) from file content."""
+    m = _CONTENT_TYPE_RE.search(content)
+    return m.group(1).upper() if m else None
 
 
 @dataclass
@@ -116,8 +131,9 @@ class DITAIssuesPhase:
         self.project_dir = project_dir
         self.dry_run = dry_run
         
-        # Initialize Vale runner with venv Vale for consistent behavior
-        self.vale = ValeRunner(vale_path=vale_path)
+        # Initialize Vale runner with venv Vale for consistent behavior,
+        # merging file-pattern exclusions from the project's .vale.ini
+        self.vale = ValeRunner(vale_path=vale_path, project_dir=project_dir)
         
         # Initialize fixer registry with tier system
         self.registry = FixerRegistry(llm_client, memory)
@@ -342,7 +358,17 @@ class DITAIssuesPhase:
                     error=error,
                 )
                 continue
-            
+
+            # Skip rules that don't apply to this file's content type.
+            # Vale's own rules handle this internally, but the agent's
+            # rules have applicable_types metadata that should be enforced
+            # to prevent, e.g., TaskSection fixes on CONCEPT files.
+            file_content_type = _extract_content_type(content)
+            if should_skip_rule(rule, file_content_type):
+                console.print(f"      [dim]~ {filepath.name} - rule {rule} not applicable to {file_content_type or 'unknown'} type[/dim]")
+                stats["fixed"] += 1  # Not an error, just not applicable
+                continue
+
             # Apply the fixer
             fix_result = fixer.fix(filepath, content, issue.line, issue.message)
             
@@ -806,12 +832,13 @@ class DITAIssuesPhase:
                         f"         [dim]{validation.error[:80]}{'...' if len(validation.error) > 80 else ''}[/dim]"
                     )
 
-                    # Record in manual review
+                    # Record in manual review with distinct label so users
+                    # know this is an agent content-quality check, NOT a vale finding.
                     self.memory.record_manual_review(
                         filepath=filepath,
-                        rule="ShortDescription",
+                        rule="ContentQuality",
                         line=line_num,
-                        message="Existing [role=\"_abstract\"] paragraph has semantic quality issues",
+                        message="Existing [role=\"_abstract\"] paragraph has content quality issues (not a Vale finding)",
                         reason=f"{validation.error}. {validation.suggestion}",
                         already_counted=False,
                     )
