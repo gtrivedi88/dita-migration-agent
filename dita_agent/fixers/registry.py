@@ -907,27 +907,17 @@ class RelatedLinksTemplateFixer(TemplateFixer):
     def __init__(self, llm_client: LLMClient, memory: SessionMemoryV2):
         super().__init__(llm_client, memory, "RelatedLinks")
 
-    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
-        """Check if there are actual links before calling LLM."""
+    @staticmethod
+    def _is_valid_link(line_text: str) -> bool:
+        """Check if a list item contains a valid link: or xref: macro."""
+        return line_text.startswith('*') and ('link:' in line_text or 'xref:' in line_text)
 
-        # Extract the Additional resources section
-        lines = content.split('\n')
+    @staticmethod
+    def _classify_section_items(lines: list[str], section_start: int) -> tuple[bool, list[str]]:
+        """Classify items in the Additional resources section as links or non-links.
 
-        # Find the section (line is approximate, search for the section)
-        section_start = -1
-        for i, l in enumerate(lines):
-            if 'Additional resources' in l:
-                section_start = i
-                break
-
-        if section_start == -1:
-            return FixResult(
-                success=False,
-                error="MANUAL_REVIEW: Could not find Additional resources section",
-                method="pattern"
-            )
-
-        # Check next 20 lines for links
+        Returns (has_links, non_link_items).
+        """
         has_links = False
         non_link_items = []
 
@@ -938,14 +928,35 @@ class RelatedLinksTemplateFixer(TemplateFixer):
             if line_content.startswith('==') or line_content.startswith('include::'):
                 break
 
-            # Check list items
-            if line_content.startswith('*'):
-                if 'link:' in line_content or 'xref:' in line_content:
-                    has_links = True
-                else:
-                    non_link_items.append(line_content)
+            if not line_content.startswith('*'):
+                continue
 
-        # If NO links at all, route to manual review immediately
+            if 'link:' in line_content or 'xref:' in line_content:
+                has_links = True
+            else:
+                non_link_items.append(line_content)
+
+        return has_links, non_link_items
+
+    def fix(self, filepath: Path, content: str, line: int, message: str) -> FixResult:
+        """Check if there are actual links before calling LLM."""
+
+        lines = content.split('\n')
+
+        # Find the Additional resources section (line is approximate)
+        section_start = next(
+            (i for i, l in enumerate(lines) if 'Additional resources' in l), -1
+        )
+        if section_start == -1:
+            return FixResult(
+                success=False,
+                error="MANUAL_REVIEW: Could not find Additional resources section",
+                method="pattern"
+            )
+
+        has_links, non_link_items = self._classify_section_items(lines, section_start)
+
+        # No links at all — route to manual review immediately
         if not has_links:
             return FixResult(
                 success=False,
@@ -954,7 +965,31 @@ class RelatedLinksTemplateFixer(TemplateFixer):
                 method="pattern"
             )
 
-        # Has some links - let LLM try to fix
+        # ALL items are valid links (no non-link items) — false positive from
+        # Vale, e.g. links containing AsciiDoc attributes like {attr} in URL
+        # or link text. Do NOT modify the file.
+        if not non_link_items:
+            return FixResult(
+                success=True,
+                content=content,
+                method="pattern",
+                message="All items in Additional resources are valid links (link: or xref:). "
+                        "No changes needed — likely a Vale false positive due to AsciiDoc attributes in link URLs or text."
+            )
+
+        # Check if the specific flagged line is itself a valid link.
+        # Vale may flag: * link:https://.../{attribute}[{attribute} text]
+        # because it cannot resolve AsciiDoc attributes.
+        if 0 < line <= len(lines) and self._is_valid_link(lines[line - 1].strip()):
+            return FixResult(
+                success=True,
+                content=content,
+                method="pattern",
+                message=f"Flagged line {line} is a valid link (contains link: or xref: macro). "
+                        "No changes needed — likely a Vale false positive due to AsciiDoc attributes."
+            )
+
+        # Has some links but also non-link items — let LLM try to fix
         return super().fix(filepath, content, line, message)
 
 

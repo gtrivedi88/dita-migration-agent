@@ -30,6 +30,14 @@ WHAT COUNTS AS A LINK IN DITA:
 CRITICAL: The link: or xref: macro MUST be present!
 Just formatting text with backticks ` or bold * does NOT make it a link.
 
+⚠️ LINKS WITH ASCIIDOC ATTRIBUTES ARE VALID:
+Links containing AsciiDoc attributes (e.g., {attribute-name}) in the URL or link text
+are VALID links and MUST be preserved. Examples of VALID links:
+- * link:https://github.com/org/{repo-name}[{product-name} source code]
+- * xref:proc_{topic-name}_{context}[]
+- * link:{prod-url}some-page[Some page]
+Do NOT delete or modify these links. The attributes resolve at build time.
+
 🚨 CRITICAL RULE: Only fix what you can SEE and VERIFY
 - DO NOT search for URLs on the internet
 - DO NOT assume URLs exist
@@ -138,15 +146,15 @@ After fixing, every remaining list item should:
 - Have NO plain text items without link macros""",
     examples=[
         RuleExample(
-            description="Remove non-link text",
+            description="Clean up prose around existing links, keep valid links intact",
             before=""".Additional resources
 * For more information, see xref:other-topic.adoc[Other Topic].
-* The configuration guide has more details.
-* link:https://example.com[External Resource]""",
+* link:https://example.com[External Resource]
+* link:https://github.com/org/{repo-attribute}[{product-attribute} source code]""",
             after=""".Additional resources
 * xref:other-topic.adoc[Other Topic]
-* xref:configuration-guide.adoc[Configuration Guide]
-* link:https://example.com[External Resource]""",
+* link:https://example.com[External Resource]
+* link:https://github.com/org/{repo-attribute}[{product-attribute} source code]""",
         ),
     ],
 )
