@@ -7,10 +7,12 @@ Claude Code skills that fix DITA compatibility and Red Hat style issues in Ascii
 ```bash
 git clone git@github.com:gtrivedi88/dita-migration-agent.git
 cd dita-migration-agent
-./setup.sh ../your-asciidoc-project
+./setup.sh
 ```
 
-The setup script installs vale (if missing) and configures your project's `.vale.ini`.
+The setup script checks that vale is installed (offers to install if missing)
+and verifies the agent's styles and configuration are intact. No files are
+created in your project — the agent is self-contained.
 
 ## Use
 
@@ -61,6 +63,10 @@ claude
 | Terminology | Abbreviation periods, conscious language, heading punctuation |
 
 Anything that can't be auto-fixed goes to `manual-review.md` with context and options.
+
+By default, only errors and warnings are processed. Use `--severity all` to
+also include 22 suggestion-level rules (contractions, passive voice, Oxford
+comma, sentence length, etc.).
 
 ## Available skills
 

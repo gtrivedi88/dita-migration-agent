@@ -8,8 +8,8 @@ description: "Run vale linting on AsciiDoc files and report all violations witho
 Run vale and report all violations without modifying any files. Use this to
 audit the current state of documentation before deciding what to fix.
 
-Works with any AsciiDoc project that has a `.vale.ini` configured to use
-AsciiDocDITA and/or RedHat styles.
+Works with any AsciiDoc project. The agent ships its own `.vale.ini` and
+styles — no configuration is needed in the target project.
 
 ## Usage
 
@@ -22,21 +22,25 @@ AsciiDocDITA and/or RedHat styles.
 
 ## What This Skill Does
 
-### Step 0: Find Project Root
+### Step 0: Determine Agent Root
 
-Determine the project root directory by walking up from the target path until
-you find a `.vale.ini` file. All vale commands must be run from this directory.
+The agent root is the repository that contains this skill. Find it by
+locating the directory that contains both `.claude/skills/` and `styles/`
+directories. The agent ships its own `.vale.ini` at `<agent-root>/.vale.ini`.
+All vale commands must use `--config` to point to this file.
 
 ### Step 1: Run Vale
 
 ```bash
-cd <project-root>
-vale --output=JSON <target-path> 2>/dev/null
+vale --config="$AGENT_ROOT/.vale.ini" --output=JSON <target-path> 2>/dev/null
 ```
 
 If `--severity error` is passed, filter results to error-level only.
-If `--severity all` is passed, include suggestions (vale's MinAlertLevel is warning by default).
+If `--severity all` is passed, include suggestions (the agent's MinAlertLevel is warning by default).
 Default: show errors and warnings.
+
+Note: You do NOT need to `cd` to any specific directory or find a `.vale.ini`
+in the user's project. The `--config` flag makes the agent self-contained.
 
 ### Step 2: Parse and Classify
 
@@ -55,7 +59,7 @@ Parse the JSON output and classify each violation:
 Print a structured report:
 
 ```
-vale-check: <project-root>/topics/administration_guide/
+vale-check: <target-path>
 
 ERRORS (must fix):
   AsciiDocDITA.NestedSection — 2 files, 3 issues [AUTO/MANUAL]

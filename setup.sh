@@ -1,22 +1,19 @@
 #!/bin/bash
-# setup.sh — Install prerequisites and configure your AsciiDoc project for DITA migration
+# setup.sh — Verify prerequisites for the DITA Migration Agent
 #
 # Usage:
-#   ./setup.sh <path-to-your-asciidoc-project>
-#
-# Example:
-#   ./setup.sh ../devspaces-dita-migration
-#   ./setup.sh ../my-docs-repo
+#   ./setup.sh
 #
 # What this script does:
 #   1. Checks that vale is installed (installs if missing)
-#   2. Configures .vale.ini in your project to use the styles from this repo
-#   3. Verifies the setup works by running vale on a test file
+#   2. Verifies the agent's styles exist
+#   3. Verifies the agent's .vale.ini is valid
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STYLES_DIR="$SCRIPT_DIR/styles"
+VALE_INI="$SCRIPT_DIR/.vale.ini"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -28,28 +25,12 @@ info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# --- Check arguments ---
-if [ $# -lt 1 ]; then
-    error "Usage: ./setup.sh <path-to-your-asciidoc-project>"
-    echo ""
-    echo "Example:"
-    echo "  ./setup.sh ../devspaces-dita-migration"
-    echo "  ./setup.sh ../my-docs-repo"
-    exit 1
-fi
-
-PROJECT_DIR="$(cd "$1" 2>/dev/null && pwd)" || {
-    error "Directory not found: $1"
-    exit 1
-}
-
 echo ""
 echo "============================================================"
 echo "  DITA Migration Agent — Setup"
 echo "============================================================"
 echo ""
-echo "  Agent repo:   $SCRIPT_DIR"
-echo "  Target project: $PROJECT_DIR"
+echo "  Agent repo: $SCRIPT_DIR"
 echo ""
 
 # --- Step 1: Check vale ---
@@ -117,106 +98,39 @@ DITA_COUNT=$(ls "$STYLES_DIR/AsciiDocDITA/"*.yml 2>/dev/null | wc -l)
 REDHAT_COUNT=$(ls "$STYLES_DIR/RedHat/"*.yml 2>/dev/null | wc -l)
 info "Found $DITA_COUNT AsciiDocDITA rules and $REDHAT_COUNT RedHat rules"
 
-# --- Step 3: Configure .vale.ini in the target project ---
-info "Configuring .vale.ini in $PROJECT_DIR..."
+# --- Step 3: Verify .vale.ini ---
+info "Checking agent .vale.ini..."
 
-# Calculate relative path from project to styles
-if command -v python3 &>/dev/null; then
-    RELATIVE_STYLES=$(python3 -c "import os.path; print(os.path.relpath('$STYLES_DIR', '$PROJECT_DIR'))")
-elif command -v realpath &>/dev/null; then
-    RELATIVE_STYLES=$(realpath --relative-to="$PROJECT_DIR" "$STYLES_DIR")
+if [ ! -f "$VALE_INI" ]; then
+    error ".vale.ini not found at $VALE_INI"
+    error "The agent repo may be incomplete. Try re-cloning."
+    exit 1
+fi
+
+info ".vale.ini found at $VALE_INI"
+
+# Verify vale can load the config
+if vale ls-config --config="$VALE_INI" &>/dev/null; then
+    info "Vale config is valid."
 else
-    # Fallback: use absolute path
-    RELATIVE_STYLES="$STYLES_DIR"
-    warn "Could not compute relative path (no python3 or realpath). Using absolute path."
-fi
-
-VALE_INI="$PROJECT_DIR/.vale.ini"
-
-if [ -f "$VALE_INI" ]; then
-    warn ".vale.ini already exists at $VALE_INI"
-    echo "  Current StylesPath: $(grep -E '^StylesPath' "$VALE_INI" 2>/dev/null || echo '(not set)')"
-    echo ""
-    read -p "Overwrite with new configuration? [y/N] " -n 1 -r
-    echo ""
-
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        info "Keeping existing .vale.ini"
-    else
-        # Backup existing
-        cp "$VALE_INI" "$VALE_INI.bak"
-        info "Backed up existing .vale.ini to .vale.ini.bak"
-    fi
-fi
-
-# Write .vale.ini if user agreed or it doesn't exist
-if [ ! -f "$VALE_INI" ] || [[ ${REPLY:-} =~ ^[Yy]$ ]]; then
-    cat > "$VALE_INI" << EOF
-StylesPath = $RELATIVE_STYLES
-MinAlertLevel = warning
-
-[*.adoc]
-BasedOnStyles = AsciiDocDITA, RedHat
-
-# Exclude snippet files — they are include fragments, not standalone modules
-[**/snippets/*.adoc]
-BasedOnStyles =
-
-[**/common/*.adoc]
-BasedOnStyles =
-
-[snippets/*.adoc]
-BasedOnStyles =
-
-[common/*.adoc]
-BasedOnStyles =
-EOF
-    info "Created .vale.ini with StylesPath = $RELATIVE_STYLES"
-fi
-
-# --- Step 4: Verify ---
-info "Verifying setup..."
-
-# Find a .adoc file to test
-TEST_FILE=$(find "$PROJECT_DIR" -name "*.adoc" -not -path "*/snippets/*" -not -path "*/common/*" | head -1)
-
-if [ -n "$TEST_FILE" ]; then
-    if cd "$PROJECT_DIR" && vale --output=JSON "$TEST_FILE" &>/dev/null; then
-        VALE_OUTPUT=$(cd "$PROJECT_DIR" && vale --output=JSON "$TEST_FILE" 2>/dev/null)
-        if command -v python3 &>/dev/null; then
-            ISSUE_COUNT=$(echo "$VALE_OUTPUT" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-total = sum(len(v) for v in data.values())
-print(total)
-" 2>/dev/null || echo "?")
-        else
-            # Count issues by counting "Line" occurrences in JSON
-            ISSUE_COUNT=$(echo "$VALE_OUTPUT" | grep -c '"Line"' 2>/dev/null || echo "?")
-        fi
-        info "Vale runs successfully. Found $ISSUE_COUNT issues in test file."
-    else
-        warn "Vale returned an error on the test file. Check your .vale.ini configuration."
-    fi
-else
-    warn "No .adoc files found in $PROJECT_DIR. Setup complete but could not verify."
+    warn "Vale could not load $VALE_INI. Check the config syntax."
 fi
 
 # --- Done ---
 echo ""
 echo "============================================================"
-echo "  Setup complete"
+echo "  Setup complete — agent is ready"
 echo "============================================================"
 echo ""
 echo "  Next steps:"
 echo ""
-echo "  1. Open Claude Code from the agent directory:"
+echo "  1. Open Claude Code from this directory:"
 echo "     cd $SCRIPT_DIR && claude"
 echo ""
 echo "  2. Run a check on your project:"
-echo "     /vale-check $1/"
+echo "     /vale-check ../your-project/topics/"
 echo ""
 echo "  3. Fix violations (recommended: one assembly at a time):"
-echo "     /vale-fix $1/assemblies/assembly_getting-started.adoc"
+echo "     /vale-fix ../your-project/assemblies/assembly_getting-started.adoc"
 echo ""
 echo "============================================================"

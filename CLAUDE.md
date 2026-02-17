@@ -39,6 +39,19 @@ All skills take the path to the target project's files as their first argument:
 4. **Manual review for ambiguity** — when multiple valid approaches exist, create manual-review.md
 5. **Post-fix verification** — re-run vale after every fix to catch regressions
 
+## Vale Configuration
+
+The agent is self-contained — it ships its own `.vale.ini` at the repository
+root. All vale commands use `--config=<agent-root>/.vale.ini` to ensure
+consistent behavior regardless of the target project's configuration.
+
+The agent's `.vale.ini` uses `StylesPath = styles`, which resolves to the
+`styles/` directory adjacent to the config file. No configuration is needed
+in the target project.
+
+If the target project has its own `.vale.ini`, it is ignored by the agent's
+skills — the `--config` flag takes precedence.
+
 ## What Gets Fixed
 
 - **DITA structure**: Missing abstracts, unsupported block titles, nested sections, callout conversion, content type assignment, and 25+ more structural rules
@@ -62,7 +75,8 @@ dita-migration-agent/
 ├── styles/
 │   ├── AsciiDocDITA/          # 31 DITA compatibility rules
 │   └── RedHat/                # 35 Red Hat style rules
-├── setup.sh                   # Auto-install vale + configure target project
+├── .vale.ini                  # Vale config (self-contained; uses styles/ directory)
+├── setup.sh                   # Verify prerequisites (vale installation)
 ├── CLAUDE.md                  # This file
 └── README.md                  # User documentation
 ```
@@ -78,7 +92,6 @@ your-project/
 ├── snippets/             # Reusable fragments (excluded from vale)
 ├── common/               # Shared attributes (excluded from vale)
 ├── images/               # All images
-├── .vale.ini             # Vale config (created by setup.sh)
 └── scripts/              # Optional validation scripts
 ```
 
