@@ -1,9 +1,6 @@
 ---
 name: vale-check
-description: Run vale linting on AsciiDoc files and report all violations without making changes. Shows a structured summary grouped by severity, rule, and file.
-argument-hint: <path-to-project-files> [--severity error|warning|all]
-context: fork
-allowed-tools: Read, Glob, Grep, Bash
+description: "Run vale linting on AsciiDoc files and report all violations without making changes. Shows a structured summary grouped by severity, rule, and file. Usage: /vale-check <path-to-project-files> [--severity error|warning|all]"
 ---
 
 # vale-check

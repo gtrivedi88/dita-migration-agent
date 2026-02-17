@@ -1,9 +1,6 @@
 ---
 name: vale-fix
-description: Run vale linting on AsciiDoc files and fix all AsciiDocDITA and RedHat violations. Auto-fixes DITA structure, grammar, callouts, content types, and more. Creates manual-review.md for ambiguous cases.
-argument-hint: <path-to-project-files> [--severity error|warning|all]
-context: fork
-allowed-tools: Read, Glob, Grep, Write, Edit, Bash, Task, AskUserQuestion
+description: "Run vale linting on AsciiDoc files and fix all AsciiDocDITA and RedHat violations. Auto-fixes DITA structure, grammar, callouts, content types, and more. Creates manual-review.md for ambiguous cases. Usage: /vale-fix <path-to-project-files> [--severity error|warning|all]"
 ---
 
 # vale-fix

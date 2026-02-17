@@ -1,9 +1,6 @@
 ---
 name: validate-refs
-description: Validate cross-references, includes, images, and duplicate IDs in an AsciiDoc documentation project. Reports broken xrefs, missing includes, missing images, and duplicate IDs.
-argument-hint: <path-to-project> [--fix]
-context: fork
-allowed-tools: Read, Glob, Grep, Bash, Edit, Write, AskUserQuestion
+description: "Validate cross-references, includes, images, and duplicate IDs in an AsciiDoc documentation project. Reports broken xrefs, missing includes, missing images, and duplicate IDs. Usage: /validate-refs <path-to-project> [--fix]"
 ---
 
 # validate-refs

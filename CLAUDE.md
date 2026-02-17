@@ -94,15 +94,24 @@ your-project/
 
 ## Vale Rules Summary
 
+Default severity filter: `MinAlertLevel = warning` (only errors and warnings
+are reported). Use `--severity all` to include suggestions.
+
 ### AsciiDocDITA (31 rules)
 - **6 errors**: NestedSection, EntityReference, ExampleBlock, MismatchedId, TaskExample, TaskSection
-- **22 warnings**: AdmonitionTitle, AssemblyContents, AuthorLine, BlockTitle, CalloutList, ContentType, DiscreteHeading, DocumentId, DocumentTitle, EquationFormula, LineBreak, PageBreak, RelatedLinks, ShortDescription, SidebarBlock, TableFooter, TaskContents, TaskDuplicate, TaskStep, TaskTitle, ThematicBreak
-- **3 suggestions**: AttributeReference, ConditionalCode, IncludeDirective, TagDirective
+- **21 warnings**: AdmonitionTitle, AssemblyContents, AuthorLine, BlockTitle, CalloutList, ContentType, DiscreteHeading, DocumentId, DocumentTitle, EquationFormula, LineBreak, PageBreak, RelatedLinks, ShortDescription, SidebarBlock, TableFooter, TaskContents, TaskDuplicate, TaskStep, TaskTitle, ThematicBreak
+- **4 suggestions** (skipped by default): AttributeReference, ConditionalCode, IncludeDirective, TagDirective
 
 ### RedHat (35 rules)
 - **5 errors**: Abbreviations, DoNotUseTerms, MergeConflictMarkers, Spacing, TermsErrors
-- **10 warnings**: CaseSensitiveTerms, ConsciousLanguage, EmDash, GitLinks, HeadingPunctuation, Hyphens, RepeatedWords, Slash, SmartQuotes, Spelling, TermsWarnings, Using
-- **20 suggestions**: Conjunctions, Contractions, Definitions, Ellipses, Headings, ObviousTerms, OxfordComma, PascalCamelCase, PassiveVoice, ProductCentricWriting, ReadabilityGrade, ReleaseNotes, SelfReferentialText, SentenceLength, SimpleWords, Symbols, TermsSuggestions, UserReplacedValues
+- **12 warnings**: CaseSensitiveTerms, ConsciousLanguage, EmDash, GitLinks, HeadingPunctuation, Hyphens, RepeatedWords, Slash, SmartQuotes, Spelling, TermsWarnings, Using
+- **18 suggestions** (skipped by default): Conjunctions, Contractions, Definitions, Ellipses, Headings, ObviousTerms, OxfordComma, PascalCamelCase, PassiveVoice, ProductCentricWriting, ReadabilityGrade, ReleaseNotes, SelfReferentialText, SentenceLength, SimpleWords, Symbols, TermsSuggestions, UserReplacedValues
+
+### Fix processing order
+1. Content type fixes FIRST (ContentType, BlockTitle misclassification)
+2. Structural fixes SECOND (NestedSection, TaskSection, ExampleBlock)
+3. Content fixes THIRD (CalloutList, EntityReference, LineBreak)
+4. Style fixes LAST (RedHat substitutions, grammar, punctuation)
 
 ## Critical Rules
 

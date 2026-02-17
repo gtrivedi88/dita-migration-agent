@@ -1,9 +1,6 @@
 ---
 name: build
-description: Build AsciiDoc documentation and report any errors. Supports asciidoctor HTML build and ccutil Pantheon build.
-argument-hint: <path-to-project> [--html|--ccutil|--all]
-context: fork
-allowed-tools: Read, Bash, Glob, Grep
+description: "Build AsciiDoc documentation and report any errors. Supports asciidoctor HTML build and ccutil Pantheon build. Usage: /build <path-to-project> [--html|--ccutil|--all]"
 ---
 
 # build

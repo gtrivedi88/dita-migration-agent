@@ -182,12 +182,18 @@ TEST_FILE=$(find "$PROJECT_DIR" -name "*.adoc" -not -path "*/snippets/*" -not -p
 
 if [ -n "$TEST_FILE" ]; then
     if cd "$PROJECT_DIR" && vale --output=JSON "$TEST_FILE" &>/dev/null; then
-        ISSUE_COUNT=$(cd "$PROJECT_DIR" && vale --output=JSON "$TEST_FILE" 2>/dev/null | python3 -c "
+        VALE_OUTPUT=$(cd "$PROJECT_DIR" && vale --output=JSON "$TEST_FILE" 2>/dev/null)
+        if command -v python3 &>/dev/null; then
+            ISSUE_COUNT=$(echo "$VALE_OUTPUT" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 total = sum(len(v) for v in data.values())
 print(total)
 " 2>/dev/null || echo "?")
+        else
+            # Count issues by counting "Line" occurrences in JSON
+            ISSUE_COUNT=$(echo "$VALE_OUTPUT" | grep -c '"Line"' 2>/dev/null || echo "?")
+        fi
         info "Vale runs successfully. Found $ISSUE_COUNT issues in test file."
     else
         warn "Vale returned an error on the test file. Check your .vale.ini configuration."
@@ -204,8 +210,8 @@ echo "============================================================"
 echo ""
 echo "  Next steps:"
 echo ""
-echo "  1. Open Claude Code from this directory:"
-echo "     cd $(basename "$SCRIPT_DIR") && claude"
+echo "  1. Open Claude Code from the agent directory:"
+echo "     cd $SCRIPT_DIR && claude"
 echo ""
 echo "  2. Run a check on your project:"
 echo "     /vale-check $1/"
