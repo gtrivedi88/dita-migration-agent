@@ -63,9 +63,10 @@ else
     echo ""
     echo "Install vale using one of these methods:"
     echo ""
-    echo "  macOS:   brew install vale"
-    echo "  Linux:   snap install vale"
-    echo "  Manual:  https://vale.sh/docs/install/"
+    echo "  macOS:       brew install vale"
+    echo "  Fedora/RHEL: sudo dnf install vale"
+    echo "  Ubuntu:      sudo snap install vale"
+    echo "  Manual:      https://vale.sh/docs/install/"
     echo ""
 
     read -p "Would you like to try automatic installation? [y/N] " -n 1 -r
@@ -75,11 +76,14 @@ else
         if command -v brew &>/dev/null; then
             info "Installing vale via brew..."
             brew install vale
+        elif command -v dnf &>/dev/null; then
+            info "Installing vale via dnf..."
+            sudo dnf install -y vale
         elif command -v snap &>/dev/null; then
             info "Installing vale via snap..."
             sudo snap install vale
         else
-            error "No supported package manager found (brew or snap)."
+            error "No supported package manager found (brew, dnf, or snap)."
             echo "Please install vale manually: https://vale.sh/docs/install/"
             exit 1
         fi
@@ -117,7 +121,15 @@ info "Found $DITA_COUNT AsciiDocDITA rules and $REDHAT_COUNT RedHat rules"
 info "Configuring .vale.ini in $PROJECT_DIR..."
 
 # Calculate relative path from project to styles
-RELATIVE_STYLES=$(python3 -c "import os.path; print(os.path.relpath('$STYLES_DIR', '$PROJECT_DIR'))")
+if command -v python3 &>/dev/null; then
+    RELATIVE_STYLES=$(python3 -c "import os.path; print(os.path.relpath('$STYLES_DIR', '$PROJECT_DIR'))")
+elif command -v realpath &>/dev/null; then
+    RELATIVE_STYLES=$(realpath --relative-to="$PROJECT_DIR" "$STYLES_DIR")
+else
+    # Fallback: use absolute path
+    RELATIVE_STYLES="$STYLES_DIR"
+    warn "Could not compute relative path (no python3 or realpath). Using absolute path."
+fi
 
 VALE_INI="$PROJECT_DIR/.vale.ini"
 

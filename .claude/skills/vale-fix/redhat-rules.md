@@ -44,7 +44,9 @@ Route to manual review with the exact vale message.
 - **Detects**: `<<<<<<<`, `=======`, `>>>>>>>` conflict markers
 - **Message**: "Do not commit Git merge conflict markers in source code."
 
-**Manual review always**: Cannot auto-resolve merge conflicts.
+**Manual review always**: While the markers themselves can be identified, the
+surrounding content has unresolved conflicts that require human judgment to
+resolve. Route to manual review with the conflicting sections shown.
 
 ---
 
@@ -116,17 +118,26 @@ Common corrections:
 ### ConsciousLanguage
 - **Severity**: WARNING
 - **Detects**: Non-inclusive terminology
-- **Message**: "Use X rather than 'Y'." (note: replacement may not be quoted)
+- **Message**: "Use X rather than 'Y'." (note: replacement may not be quoted when multiple options)
 
-**Auto-fix** (parse message, apply substitution):
-| Wrong | Correct |
-|---|---|
-| `blacklist` | `blocklist` |
-| `whitelist` | `allowlist` |
-| `master` | `primary` / `source` / `controller` / `host` |
-| `slave` | `secondary` / `replica` / `worker` / `consumer` |
+**Auto-fix for deterministic cases**:
+| Wrong | Correct | Action |
+|---|---|---|
+| `blacklist` | `blocklist` | Auto-fix |
+| `whitelist` | `allowlist` | Auto-fix |
 
-**Manual review when**: `master`/`slave` replacement is context-dependent (multiple valid options).
+**Manual review for context-dependent cases**:
+| Wrong | Options | Action |
+|---|---|---|
+| `master branch` | `main branch` or `primary branch` | Auto-fix: use `main` |
+| `master node` | `control plane node` | Auto-fix |
+| `master` (other) | `primary` / `source` / `controller` / `host` / `director` | Manual review |
+| `slave` (any) | `secondary` / `replica` / `worker` / `consumer` / `responder` | Manual review |
+
+**Exceptions**: `master broker` and `slave broker` are NOT flagged (negative
+lookahead in rule). Do not change these terms if they appear unflagged.
+
+See Decision Tree 8 in decision-guide.md for full routing logic.
 
 ---
 
@@ -192,7 +203,8 @@ Remove trailing `.`, `?`, or `!` from the heading.
 Before: This is the the best approach.
 After:  This is the best approach.
 ```
-Remove the first occurrence of the duplicated word (keeping one).
+Remove the second occurrence of the duplicated word (keeping the first one).
+Match is case-insensitive: `The the` → `The`.
 
 ---
 
@@ -261,30 +273,38 @@ Replace `using` with `by using` at the flagged location.
 
 ## SUGGESTION-Level Rules (Skip Unless --severity all)
 
-These are informational and typically not auto-fixed:
+These rules are NOT reported by default (`MinAlertLevel = warning`). Only
+process them when `--severity all` is passed.
 
-| Rule | What it flags |
-|---|---|
-| Conjunctions | Sentences starting with And, But, Or, So |
-| Contractions | `can't` → `cannot`, `don't` → `do not` |
-| Definitions | Undefined acronyms on first use |
-| Ellipses | `...` except for omitted words |
-| Headings | Non-sentence-case headings |
-| ObviousTerms | Self-explanatory UI field names |
-| OxfordComma | Missing Oxford comma |
-| PascalCamelCase | Unwrapped PascalCase terms |
-| PassiveVoice | Passive voice constructions |
-| ProductCentricWriting | "allows you", "enables you" |
-| ReadabilityGrade | Flesch-Kincaid grade > 9 |
-| ReleaseNotes | `Now` → `With this update` |
-| SelfReferentialText | "this section", "this topic" |
-| SentenceLength | Sentences > 32 words |
-| SimpleWords | `utilize` → `use`, `accomplish` → `do` |
-| Symbols | `!` and `&` usage |
-| TermsSuggestions | Context-dependent term suggestions |
-| UserReplacedValues | Hyphens in user-replaced values |
+### Auto-fixable suggestions
 
-**For suggestion-level rules**: Only fix if `--severity all` is passed. Otherwise skip.
+| Rule | Message format | Fix strategy |
+|---|---|---|
+| Contractions | "Avoid contractions. Use 'X' rather than 'Y.'" | Parse message, replace contraction with expanded form |
+| Ellipses | "Avoid the ellipsis (...) except to indicate omitted words." | Remove `...` or `…` (manual review if indicating omission) |
+| ReleaseNotes | "For release notes, consider using 'X' rather than 'Y'." | `Now` → `With this update`, `Previously` → `Before this update` |
+| SimpleWords | "Use simple language. Consider using 'X' rather than 'Y'." | Parse message, apply substitution |
+| TermsSuggestions | "Depending on the context, consider using 'X' rather than 'Y'." | Parse message, apply substitution (manual review if context-dependent) |
+| UserReplacedValues | "Separate words by underscores in user-replaced values." | Replace `-` with `_` in `<placeholder-values>` |
+
+### Manual-review-only suggestions
+
+| Rule | What it flags | Why manual review |
+|---|---|---|
+| Conjunctions | Sentences starting with And, But, Or, So | Rewriting sentence structure requires context |
+| Definitions | Undefined acronyms on first use | Need to write the definition |
+| Headings | Non-sentence-case headings | May be proper nouns (267 exceptions in rule) |
+| ObviousTerms | Self-explanatory UI field names | Need to evaluate if documentation is needed |
+| OxfordComma | Missing Oxford comma in `a, b and c` | Add comma: `a, b, and c` (auto-fixable in most cases) |
+| PascalCamelCase | Unwrapped PascalCase/camelCase terms | Wrap in backticks or verify it's a proper noun (210 exceptions) |
+| PassiveVoice | Passive constructions (`is taken`, `was done`) | Rewrite in active voice requires context |
+| ProductCentricWriting | "allows you", "enables you", "lets you" | Rewrite to focus on user action |
+| ReadabilityGrade | Flesch-Kincaid grade > 9 | Simplify sentence structure (context-dependent) |
+| SelfReferentialText | "this section", "this topic", "this chapter" | Rewrite without self-reference |
+| SentenceLength | Sentences > 32 words | Split or simplify (context-dependent) |
+| Symbols | `!` and `&` in prose (not in code/URLs) | Remove or rewrite |
+
+**For suggestion-level rules**: Only process if `--severity all` is passed. Otherwise skip entirely.
 
 ---
 
@@ -293,17 +313,36 @@ These are informational and typically not auto-fixed:
 Most RedHat rules use substitution and produce messages in these formats:
 
 1. `"Use 'replacement' rather than 'original'."` — both quoted
-2. `"Use replacement rather than 'original'."` — replacement unquoted (may have multiple options separated by `|`)
+2. `"Use replacement rather than 'original'."` — replacement unquoted (multiple options separated by `|`)
 3. `"Consider using 'replacement' rather than 'original'."` — suggestion variant
-4. `"For release notes, consider using 'replacement' rather than 'original'."` — domain-specific
+4. `"Avoid contractions. Use 'replacement' rather than 'original.'"` — contraction variant
+5. `"For release notes, consider using 'replacement' rather than 'original'."` — domain-specific
 
 **Parsing algorithm**:
-1. Extract text between `Use '` and `' rather than '` → replacement
-2. Extract text between `rather than '` and `'.` → original
-3. If no quotes around replacement: extract text between `Use ` and ` rather than '`
-4. Find `original` on the flagged line
-5. Replace first occurrence with `replacement`
-6. If replacement contains `|`, use the FIRST option (most common)
+1. Look for `rather than '` in the message — this separates replacement from original
+2. Extract the ORIGINAL: text between the last `rather than '` and the closing `'`
+3. Extract the REPLACEMENT: text between `Use ` (or `using `) and ` rather than`
+4. Strip quotes from both values if present
+5. Find `original` on the flagged line (case-sensitive match)
+6. Replace FIRST occurrence only with `replacement`
 
-**NEVER**: Replace occurrences on lines other than the flagged line.
-**NEVER**: Replace inside code blocks, attribute definitions, or ID values.
+**When replacement contains `|` (multiple options)**:
+- Use the FIRST option by default: `primary|source|controller` → use `primary`
+- Exception: `master`/`slave` in ConsciousLanguage → route to manual review (see Decision Tree 8)
+- Exception: `back end|back-end` in TermsErrors → determine noun vs adjective from context:
+  - Before a noun → use hyphenated form (`back-end server`)
+  - Standalone → use space form (`the back end`)
+
+**Protected zones — NEVER replace inside these**:
+- Code blocks (between `----` or `....` delimiters)
+- Inline code (between backticks)
+- Attribute definitions (`:attr-name: value`)
+- Attribute references (`{attribute}`)
+- ID declarations (`[id="..."]`)
+- URL values (`link:https://...[]`, `image::path[]`)
+- xref targets (`xref:id_{context}[]`)
+- ifdef/endif conditionals
+- Passthrough blocks (`pass:[]`, `++++`...`++++`)
+
+**NEVER**: Replace on lines other than the flagged line.
+**NEVER**: Modify content vale did not flag.

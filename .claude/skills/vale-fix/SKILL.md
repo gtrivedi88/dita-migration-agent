@@ -35,13 +35,21 @@ reviewable and limits blast radius.
 ### Step 0: Find Project Root
 
 Determine the project root directory by walking up from the target path until
-you find a `.vale.ini` file. All vale commands must be run from this directory.
+you find a `.vale.ini` file. Stop at the FIRST `.vale.ini` found (closest
+parent). All vale commands must be run from this directory.
 
 ```bash
 # Example: if target is ../my-project/topics/admin/proc_install.adoc
 # Walk up to find: ../my-project/.vale.ini
 # Project root = ../my-project/
 ```
+
+**If no `.vale.ini` is found**: Report an error and stop. Vale requires a
+configuration file. Tell the user to run `setup.sh` first.
+
+**Excluded directories**: Files in `snippets/` and `common/` are excluded from
+vale by the `.vale.ini` configuration. If the target path is entirely within
+these directories, vale will find zero violations — this is expected.
 
 ### Step 1: Read Guidelines
 
@@ -75,6 +83,13 @@ cd <project-root>
 vale --output=JSON <target-path> 2>/dev/null
 ```
 
+If `--severity all` is passed, also include suggestions:
+```bash
+vale --output=JSON --minAlertLevel=suggestion <target-path> 2>/dev/null
+```
+
+Default: only errors and warnings are reported (`.vale.ini` sets `MinAlertLevel = warning`).
+
 Parse the JSON output into structured issues:
 ```json
 {
@@ -90,21 +105,35 @@ Parse the JSON output into structured issues:
 }
 ```
 
+**If vale returns an empty JSON object `{}`**: Report "All clear — no
+violations found" and exit. Do not create manual-review.md.
+
+**If vale fails to run** (non-zero exit, no JSON output): Report the error
+and stop. Do not proceed without valid vale output.
+
 ### Step 4: Process Each File
 
 For each file with violations:
 
 1. Read the file content
 2. Determine content type from `:_mod-docs-content-type:` header
-3. Sort issues by line number DESCENDING (fix bottom-up to preserve line numbers)
-4. For each issue:
-   a. Look up the fix in the guideline files (dita-rules.md or redhat-rules.md)
+3. **Process issues in this order** (prevents cascading violations):
+   a. Content type fixes FIRST (ContentType, BlockTitle misclassification)
+   b. Structural fixes SECOND (NestedSection, TaskSection, ExampleBlock)
+   c. Content fixes THIRD (CalloutList, EntityReference, LineBreak, PageBreak)
+   d. Style fixes LAST (RedHat substitutions, grammar, punctuation)
+4. Within each category, sort by line number DESCENDING (fix bottom-up to preserve line numbers)
+5. For each issue:
+   a. Look up the rule: `AsciiDocDITA.*` → dita-rules.md, `RedHat.*` → redhat-rules.md
    b. Determine if fix is DETERMINISTIC or AMBIGUOUS using decision-guide.md
    c. If DETERMINISTIC: apply the fix using Edit tool
    d. If AMBIGUOUS: add to manual-review list with context and options
-5. NEVER modify content that vale did not flag
-6. NEVER make stylistic changes beyond what the specific rule requires
-7. NEVER change xref targets, link URLs, or attribute names unless the rule specifically requires it
+6. After fixing each file, re-run vale on THAT FILE alone to catch cascading violations
+   - If new violations appear, fix them following the same process
+   - Maximum 3 re-run iterations per file — if violations persist, route remaining to manual review
+7. NEVER modify content that vale did not flag
+8. NEVER make stylistic changes beyond what the specific rule requires
+9. NEVER change xref targets, link URLs, or attribute names unless the rule specifically requires it
 
 ### What Gets Fixed
 
@@ -138,15 +167,17 @@ The skill auto-fixes these categories:
 
 **e. All other vale violations** as documented in dita-rules.md and redhat-rules.md
 
-### Step 5: Verify Fixes
+### Step 5: Final Verification
 
-After all fixes are applied:
+After all files are processed:
 
-1. Re-run `vale --output=JSON` on every modified file
-2. If a fix INTRODUCED a new violation:
-   - Revert that specific fix
-   - Add to manual-review list with explanation: "Fix for [rule] introduced [new-rule] violation"
-3. If fix resolved the original violation: keep it
+1. Re-run `vale --output=JSON` on ALL modified files together
+2. Compare against the original violations:
+   - Original violations resolved → confirmed
+   - New violations introduced → revert the responsible fix and route to manual review
+   - Remaining violations → should only be items already in manual review
+3. If any auto-fix caused a regression in a DIFFERENT file (cross-file cascade),
+   revert both fixes and route to manual review together
 
 ### Step 6: Generate Manual Review
 
@@ -222,6 +253,15 @@ vale-fix complete:
 - ALWAYS preserve include:: directives unchanged
 - ALWAYS use the Edit tool for modifications (never Write entire files)
 
+## Error Handling
+
+- **Vale not installed**: Report error, tell user to run `setup.sh`
+- **No `.vale.ini` found**: Report error, tell user to run `setup.sh`
+- **Vale crashes or returns invalid JSON**: Report the error, stop processing
+- **File unreadable**: Skip the file, add to manual review with "File unreadable" note
+- **Edit tool fails**: Do not retry with Write tool. Route that fix to manual review
+- **Zero violations**: Report "All clear" and exit cleanly (no manual-review.md)
+
 ## Quality Checklist
 
 Before completing:
@@ -229,8 +269,10 @@ Before completing:
 - [ ] Project root found (directory containing .vale.ini)
 - [ ] Vale run with JSON output, results parsed correctly
 - [ ] Each file's content type determined before fixing
-- [ ] Fixes applied bottom-up (descending line order)
+- [ ] Fixes applied in correct order: content type → structural → content → style
+- [ ] Within each category, fixes applied bottom-up (descending line order)
 - [ ] No modifications to unflagged content
+- [ ] No modifications to protected elements (xrefs, includes, attributes, code blocks, IDs, URLs)
 - [ ] Vale re-run on all modified files — zero regressions
 - [ ] manual-review.md generated for all ambiguous issues
 - [ ] Summary printed with counts
